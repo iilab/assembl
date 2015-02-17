@@ -1,0 +1,19 @@
+
+
+assembl:
+    build: .
+    links:
+        - memcached
+        - redis
+        - virtuoso
+
+virtuoso:
+    build: dockerfiles/virtuoso
+
+memcached:
+    # TODO what version of memcached is used in production?
+    image: memcached:latest
+
+redis:
+    # TODO what version of redis is used in production?
+    image: redis:latest

@@ -1,0 +1,7 @@
+.git
+node_packages
+venv
+dockerfiles
+virtuoso
+*.swp
+.rbenv
