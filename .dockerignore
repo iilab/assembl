@@ -1,7 +1,8 @@
 .git
 node_packages
 venv
-dockerfiles
+dockerfiles/virtuoso
 virtuoso
 *.swp
 .rbenv
+local.ini

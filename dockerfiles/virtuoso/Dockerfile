@@ -22,16 +22,16 @@ RUN     apt-get update && apt-get install -y \
 # Build virtuoso
 RUN     mkdir /src
 WORKDIR /src
-RUN     wget https://github.com/openlink/virtuoso-opensource/archive/v7.2.0.1.tar.gz && \
-            tar -xf v7.2.0.1.tar.gz
-
-# TODO: merge downloaad and build, and remove the .tar.gz at the end
-WORKDIR /src/virtuoso-opensource-7.2.0.1
-RUN     ./autogen.sh && \
+RUN     wget -q \
+            http://github.com/openlink/virtuoso-opensource/archive/v7.2.0.1.tar.gz && \
+            tar -xf v7.2.0.1.tar.gz && \
+            cd /src/virtuoso-opensource-7.2.0.1 && \
+            ./autogen.sh && \
             ./configure --prefix /db && \
             make -j4 && \
             mkdir /db && \
-            make install
+            make install && \
+            rm -rf /src
 
 ADD     virtuoso.ini /db/virtuoso.ini
 
