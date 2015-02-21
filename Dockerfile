@@ -1,5 +1,22 @@
 #
+# Assembl webapp (and celery worker) image
 #
+# These instructions are ordered this way to take advantage of the docker
+# build cache. Each step will be cached as long as the instruction (and all
+# instructions before it) have not changed.
+#
+# ADD instructions will invalidate when the files being added have changed,
+# so it's best practice to try and move all of those to the end. Unfortunately
+# we need to add `fabfile.py` up front in order to be able to reuse the
+# setup instructions.  Changes to the fabfile will require most instructions to
+# be re-run. If docker and docker-compose were to become the primary mechanism
+# for development environments, this file could be updated to handle
+# installation without fabric (which is the more common approach).
+#
+# http://jpetazzo.github.io/2014/06/17/transparent-squid-proxy-docker/
+# works well for caching packages during this process.
+#
+# See: docs.docker.com/articles/dockerfile_best-practices/#the-dockerfile-instructions
 #
 
 FROM    ubuntu:14.10

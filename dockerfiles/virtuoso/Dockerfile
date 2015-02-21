@@ -1,5 +1,5 @@
 #
-# 
+# Virtuoso database image
 #
 
 FROM    ubuntu:14.10
@@ -33,10 +33,10 @@ RUN     wget -q \
             make install && \
             rm -rf /src
 
+# Bootstrap
 # TODO: it would  be awesome if the migration script was less coupled to the
 # rest of the web application. For now it's easier to just install all the
 # python dependencies
-# Bootstrap
 RUN     mkdir /code
 WORKDIR /code
 RUN     apt-get update && apt-get install -y \
