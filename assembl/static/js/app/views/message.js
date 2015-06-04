@@ -1,21 +1,16 @@
 'use strict';
 
-define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i18n', 'utils/permissions', 'views/messageSend', 'objects/messagesInProgress', 'models/agents', 'common/collectionManager', 'utils/panelSpecTypes', 'jquery', 'jquery.dotdotdot'],
-    function (Backbone, _, ckeditor, Assembl, Ctx, i18n, Permissions, MessageSendView, MessagesInProgress, Agents, CollectionManager, PanelSpecTypes, $) {
+define(['backbone.marionette','backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i18n', 'utils/permissions', 'views/messageSend', 'objects/messagesInProgress', 'models/agents', 'common/collectionManager', 'utils/panelSpecTypes', 'jquery', 'jquery.dotdotdot', 'bluebird',  'backbone.modal', 'backbone.marionette.modals'],
+    function (Marionette, Backbone, _, ckeditor, Assembl, Ctx, i18n, Permissions, MessageSendView, MessagesInProgress, Agents, CollectionManager, PanelSpecTypes, $, dotdotdot, Promise, modal1, modal2) {
 
         var MIN_TEXT_TO_TOOLTIP = 5,
             TOOLTIP_TEXT_LENGTH = 10;
-
         /**
          * @class views.MessageView
          */
-        var MessageView = Backbone.View.extend({
+        var MessageView = Marionette.ItemView.extend({
+            template: '#tmpl-loader',
             availableMessageViewStyles: Ctx.AVAILABLE_MESSAGE_VIEW_STYLES,
-            /**
-             * @type {String}
-             */
-            tagName: 'div',
-
             /**
              * @type {String}
              */
@@ -56,44 +51,79 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              * @param {MessageModel} obj the model
              */
             initialize: function (options) {
+                var that = this;
+
                 /*this.listenTo(this, "all", function(eventName) {
                  console.log("message event received: ", eventName);
                  });
+
                  this.listenTo(this.model, "all", function(eventName) {
                  console.log("message model event received: ", eventName);
                  });*/
-                this.listenTo(this.model, 'replacedBy', this.onReplaced);
-                this.listenTo(this.model, 'showBody', this.onShowBody);
-                this.listenTo(this.model, 'change', this.render);
 
                 this.messageListView = options.messageListView;
+                this.messageFamilyView = options.messageFamilyView;
                 this.viewStyle = this.messageListView.getTargetMessageViewStyleFromMessageListConfig(this);
-                this.messageListView.on('annotator:destroy', this.onAnnotatorDestroy, this);
-                this.messageListView.on('annotator:initComplete', this.onAnnotatorInitComplete, this);
 
+                this.listenTo(this.messageListView, 'annotator:destroy', this.onAnnotatorDestroy);
+                this.listenTo(this.messageListView, 'annotator:initComplete', this.onAnnotatorInitComplete);
+                this.listenTo(this.messageListView, 'annotator:success', this.render);
                 /**
                  * The collection of annotations loaded in annotator for this message.
                  * They do not need to be re-loaded on render
                  * @type {Annotation}
                  */
                 this.loadedAnnotations = {};
+
+                this.level = this.currentLevel !== null ? this.currentLevel : 1;
+
+                if (!_.isUndefined(this.level)) {
+                    this.currentLevel = this.level;
+                }
+
+                this.creator = undefined;
+                this.model.getCreatorPromise().then(function(creator){
+                    that.creator = creator;
+                    that.template = '#tmpl-message';
+                    that.render();
+                });
             },
+            modelEvents: {
+              'replacedBy':'onReplaced',
+              'change':'render',
+              'openWithFullBodyView': 'onOpenWithFullBodyView'
+            },
+            
+            ui: {
+              jumpToParentButton: ".js_message-jumptoparentbtn",
+              jumpToMessageInThreadButton: ".js_message-jump-to-message-in-thread",
+              jumpToMessageInReverseChronologicalButton: ".js_message-jump-to-message-in-reverse-chronological",
+              showAllMessagesByThisAuthorButton: ".js_message-show-all-by-this-author",
+              messageReplyBox: ".message-replybox"
+            },
+            
 
             /**
              * @event
              */
             events: {
 
-                //'click .js_messageHeader': 'onMessageTitleClick',
+                'click .js_messageHeader': 'onMessageTitleClick',
                 'click .js_messageTitle': 'onMessageTitleClick',
                 'click .js_readMore': 'onMessageTitleClick',
                 'click .js_readLess': 'onMessageTitleClick',
                 'click .message-hoistbtn': 'onMessageHoistClick',
+                'click @ui.jumpToParentButton': 'onMessageJumpToParentClick',
+                'click @ui.jumpToMessageInThreadButton': 'onMessageJumpToMessageInThreadClick',
+                'click @ui.jumpToMessageInReverseChronologicalButton': 'onMessageJumpToMessageInReverseChronologicalClick',
+                'click @ui.showAllMessagesByThisAuthorButton': 'onShowAllMessagesByThisAuthorClick',
 
                 //
-                'click .message-replybox-openbtn': 'focusReplyBox',
-                'click .messageSend-cancelbtn': 'closeReplyBox',
-                'focus .messageSend-body': 'onTextboxFocus',
+                'click .js_messageReplyBtn': 'onMessageReplyBtnClick',
+                'click .messageSend-cancelbtn': 'onReplyBoxCancelBtnClick',
+                //These two are from messageSend.js, do NOT use @ui
+                'focus .js_messageSend-body': 'onReplyBoxFocus',
+                'blur .js_messageSend-body': 'onReplyBoxBlur',
                 //
                 'mousedown .js_messageBodyAnnotatorSelectionAllowed': 'startAnnotatorTextSelection',
                 'mousemove .js_messageBodyAnnotatorSelectionAllowed': 'updateAnnotatorTextSelection',
@@ -102,14 +132,254 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
 
                 // menu
                 'click .js_message-markasunread': 'markAsUnread',
-                'click .js_message-markasread': 'markAsRead'
+                'click .js_message-markasread': 'markAsRead',
+
+                'click .js_openTargetInPopOver': 'openTargetInPopOver'
             },
 
             /**
-             * The thread message template
-             * @type {_.template}
+             * @param htmlOrText Any string, p and br tags are replaced with 
+             * spaces, and all html is stripped
+             * @return string
              */
-            template: Ctx.loadTemplate('message'),
+            generateBodyPreview: function(htmlOrText){
+              // The div is just there in case there actually isn't any html
+              // in which case jquery would crash without it
+              var bodyWithoutNewLine = $("<div>" + String(htmlOrText) + "</div>");
+              bodyWithoutNewLine.find("p").after(" ");
+              bodyWithoutNewLine.find("br").replaceWith(" ");
+              return bodyWithoutNewLine.text().replace(/\s{2,}/g, ' ');
+            },
+            
+            serializeData: function(){
+                var bodyFormatClass,
+                    body,
+                    metadata_json = this.model.get('metadata_json'), // this property needs to exist to display the inspiration source of a message (creativity widget)
+                    bodyFormat = this.model.get('bodyMimeType');
+
+                if (this.viewStyle == this.availableMessageViewStyles.PREVIEW || this.viewStyle == this.availableMessageViewStyles.TITLE_ONLY) {
+                    if (bodyFormat == "text/html") {
+                        //Strip HTML from preview
+                        bodyFormat = "text/plain";
+                        body = this.generateBodyPreview(this.model.get('body'));
+                    }
+                }
+
+                body = (body) ? body : this.model.get('body');
+
+                if (bodyFormat !== null) {
+                    bodyFormatClass = "body_format_" + this.model.get('bodyMimeType').replace("/", "_");
+                }
+
+                var direct_link_relative_url = Ctx.getRelativeURLFromDiscussionRelativeURL("posts/" + encodeURIComponent(this.model.get('@id'))),
+                    //share_link_url = "/static/js/bower/expando/add/index.htm?u=" +
+                    share_link_url = "/static/widget/share/index.html?u=" +
+                    encodeURIComponent(Ctx.getAbsoluteURLFromRelativeURL(direct_link_relative_url)) + "&t=" +
+                    encodeURIComponent(this.model.get('subject'));
+
+                return {
+                    message: this.model,
+                    messageListView: this.messageListView,
+                    viewStyle: this.viewStyle,
+                    metadata_json: metadata_json,
+                    creator: this.creator,
+                    parentId: this.model.get('parentId'),
+                    body: body,
+                    bodyFormatClass: bodyFormatClass,
+                    messageBodyId: Ctx.ANNOTATOR_MESSAGE_BODY_ID_PREFIX + this.model.get('@id'),
+                    isHoisted: this.isHoisted,
+                    ctx: Ctx,
+                    i18n: i18n,
+                    user_can_see_email: Ctx.getCurrentUser().can(Permissions.ADMIN_DISCUSSION),
+                    user_is_connected: !Ctx.getCurrentUser().isUnknownUser(),
+                    read: this.model.get('read'),
+                    nuggets: _.size(this.model.get('extracts')),
+                    direct_link_relative_url: direct_link_relative_url,
+                    share_link_url: share_link_url
+                }
+            },
+
+            /**
+             * The render
+             * @return {MessageView}
+             */
+            onRender: function () {
+                var that = this,
+                    modelId = this.model.id,
+                    partialMessage = MessagesInProgress.getMessage(modelId);
+                if (Ctx.debugRender) {
+                    console.log("message:render() is firing for message", this.model.id);
+                }
+                if (this.template == '#tmpl-message') {
+                  if(partialMessage['body']) {
+                    //Somebody started writing a message and didn't finish, make sure they see it.
+                    //console.log("Opening in full view because of reply in progress: ", partialMessage['body'])
+                    this.setViewStyle(this.availableMessageViewStyles.FULL_BODY);
+                  }
+                  else {
+                    this.setViewStyle(this.viewStyle);
+                  }
+                  
+                  this.clearAnnotationsToLoadCache();
+                  Ctx.removeCurrentlyDisplayedTooltips(this.$el);
+  
+                  this.$el.attr("id", "message-" + this.model.get('@id'));
+                  this.$el.addClass(this.model.get('@type'));
+
+                    if(Ctx.getCurrentUser().isUnknownUser()){
+                        this.$el.removeClass('unread').addClass('read');
+                    }else {
+                        if (this.model.get('read')) {
+                            this.$el.removeClass('unread').addClass('read');
+                        } else {
+                            this.$el.removeClass('read').addClass('unread');
+                        }
+                    }
+  
+                  Ctx.initTooltips(this.$el);
+                  if ( this.viewStyle == this.availableMessageViewStyles.FULL_BODY ){
+                      Ctx.convertUrlsToLinks(this.$el.children('.message-body')); // we target only the body part of the message, not the title
+                      Ctx.makeLinksShowOembedOnHover(this.$el.children('.message-body'));
+                  }
+  
+                  that.replyView = new MessageSendView({
+                      allow_setting_subject: false,
+                      reply_message_id: modelId,
+                      body_help_message: i18n.gettext('Type your response here...'),
+                      cancel_button_label: null,
+                      send_button_label: i18n.gettext('Send your reply'),
+                      subject_label: null,
+                      mandatory_body_missing_msg: i18n.gettext('You did not type a response yet...'),
+                      messageList: that.messageListView,
+                      msg_in_progress_body: partialMessage['body'],
+                      msg_in_progress_ctx: modelId,
+                      mandatory_subject_missing_msg: null
+                  });
+                  that.ui.messageReplyBox.append(this.replyView.render().el);
+  
+                  this.postRender();
+  
+                  if (this.replyBoxShown || partialMessage['body']) {
+                    this.ui.messageReplyBox.removeClass('hidden');
+                      if ( this.replyBoxHasFocus )
+                          this.focusReplyBox();
+                  }
+                  else {
+                    this.ui.messageReplyBox.addClass('hidden');
+                  }
+  
+                  if (this.viewStyle == this.availableMessageViewStyles.FULL_BODY) {
+                      //Only the full body view uses annotator
+                      this.messageListView.requestAnnotatorRefresh();
+                  }
+  
+                  if (this.viewStyle == that.availableMessageViewStyles.FULL_BODY && this.messageListView.defaultMessageStyle != this.availableMessageViewStyles.FULL_BODY) {
+                      this.showReadLess();
+                  }
+  
+  
+                  if(this.messageListView.isViewStyleThreadedType()
+                      && that.messageFamilyView.currentLevel !== 1) {
+                      this.model.getParentPromise().then(function(parentMessageModel){
+                          //console.log("comparing:", parentMessageModel.getSubjectNoRe(), that.model.getSubjectNoRe());
+                          if(parentMessageModel.getSubjectNoRe() === that.model.getSubjectNoRe() ) {
+                              //console.log("Hiding redundant title")
+                              that.$(".message-subject").addClass('hidden');
+                          }
+                      });
+                  }
+  
+  
+                  if (this.viewStyle == this.availableMessageViewStyles.PREVIEW) {
+  
+                      var applyEllipsis = function(){
+                          /* We use https://github.com/MilesOkeefe/jQuery.dotdotdot to show
+                           * Read More links for message previews
+                           */
+                          that.$(".ellipsis").dotdotdot({
+                              after: "a.readMore",
+                              callback: function (isTruncated, orgContent) {
+                                  //console.log("dotdotdot initialized on message", that.model.id);
+                                  //console.log(isTruncated, orgContent);
+                                  if (isTruncated)
+                                  {
+                                      that.$(".ellipsis > a.readMore, .ellipsis > p > a.readMore").removeClass('hidden');
+                                  }
+                                  else
+                                  {
+                                      that.$(".ellipsis > a.readMore, .ellipsis > p > a.readMore").addClass('hidden');
+                                      if ( that.model.get('body') && that.model.get('body').length > 610 ) // approximate string length for text which uses 4 full lines
+                                      {
+                                          if (Ctx.debugRender) {
+                                            console.log("there may be a problem with the dotdotdot of message ", that.model.id, "so we will maybe re-render it");
+                                          }
+                                          if ( ++that.reRendered < 5 ) // we use this to avoid infinite loop of render() calls
+                                          {
+                                              if (Ctx.debugRender) {
+                                                console.log("yes, we will re-render => tries: ", that.reRendered);
+                                              }
+                                              setTimeout(function(){
+                                                  that.render();
+                                              }, 500);
+                                          }
+                                          else
+                                          {
+                                              if (Ctx.debugRender) {
+                                                console.log("no, we won't re-render it because we already tried several times: ", that.reRendered);
+                                              }
+                                          }
+                                      }
+                                  }
+                              },
+                              watch: "window" //TODO:  We should trigger updates from the panel algorithm instead
+                          });
+                      };
+  
+                      that.messageListView.requestPostRenderSlowCallback(function () {
+  
+                          setTimeout(function(){
+                              //console.log("Initializing ellipsis on message", that.model.id);
+                              var current_navigation_state = that.messageListView.getContainingGroup().model.get('navigationState');
+                              //console.log("current_navigation_state:", current_navigation_state);
+                              if ( current_navigation_state == 'about' )
+                              {
+                                  that.listenToOnce(Assembl.vent, 'navigation:selected', applyEllipsis);
+                                  return;
+                              }
+                              applyEllipsis();
+                          }, 100);
+  
+  
+                          /* We no longer need this, but probably now need to
+                           * update when the panels change size with the
+                           * new system benoitg-2014-09-18
+                           *
+                           * that.listenTo(that.messageListView, "messageList:render_complete", function () {
+                           that.$(".ellipsis").trigger('update.dot');
+                           });*/
+                      });
+  
+                      var current_navigation_state = that.messageListView.getContainingGroup().model.get('navigationState');
+                      //console.log("current_navigation_state:", current_navigation_state);
+                      //Why do we need the following block?  benoitg-2015-03-03
+                      //console.log('current_navigation_state is:', current_navigation_state);
+                      if ( current_navigation_state !== undefined ){
+                          //console.log('Setting listener on navigation:selected');
+                          that.listenTo(Assembl.vent, 'navigation:selected', function(navSection) {
+                              //console.log('New navigation has just been selected:', navSection);
+                              if(navSection == 'debate') {
+                                  //console.log('Updating dotdotdot because debate has just been selected');
+                                  that.messageListView.requestPostRenderSlowCallback(function () {
+                                      that.$(".ellipsis").trigger('update.dot');
+                                  });
+                              }
+                          });
+                      }
+  
+                  }
+                }
+
+            },
 
             /**
              * Meant for derived classes to override
@@ -128,200 +398,6 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
             },
 
             /**
-             * The render
-             * @return {MessageView}
-             */
-            render: function () {
-                var that = this,
-                    modelId = this.model.id;
-                if (Ctx.debugRender) {
-                    console.log("message:render() is firing for message", this.model.id);
-                }
-                $.when(this.model.getCreatorPromise(),
-                    this.model.getExtractsPromise()
-                ).then(
-                    function (creator, extracts) {
-                        var data = that.model.toJSON(),
-                            children,
-                            bodyFormat = null,
-                            bodyFormatClass = null,
-                            level;
-                        level = that.currentLevel !== null ? that.currentLevel : 1;
-                        if (!_.isUndefined(level)) {
-                            that.currentLevel = level;
-                        }
-                        Ctx.removeCurrentlyDisplayedTooltips(that.$el);
-                        that.clearAnnotationsToLoadCache();
-                        that.setViewStyle(that.viewStyle);
-
-                        data['id'] = data['@id'];
-                        data['date'] = data.date; //Ctx.formatDate(data.date);
-                        data['creator'] = creator;
-
-                        if (!("metadata_json" in data)) // this property needs to exist to display the inspiration source of a message (creativity widget)
-                            data['metadata_json'] = null;
-
-                        data['viewStyle'] = that.viewStyle;
-                        bodyFormat = that.model.get('bodyMimeType');
-                        if (that.viewStyle == that.availableMessageViewStyles.PREVIEW || that.viewStyle == that.availableMessageViewStyles.TITLE_ONLY) {
-                            if (bodyFormat == "text/html") {
-                                //Strip HTML from preview
-                                bodyFormat = "text/plain";
-
-                                // The div is just there in case there actually isn't any html
-                                // in which case jquery would crash without it
-                                var bodyWithoutNewLine = $("<div>" + String(data['body']) + "</div>");
-                                bodyWithoutNewLine.find("p").after(" ");
-                                bodyWithoutNewLine.find("br").replaceWith(" ");
-                                data['body'] = bodyWithoutNewLine.text().replace(/\s{2,}/g, ' ');
-                                
-                            }
-                        }
-                        if (bodyFormat !== null) {
-                            bodyFormatClass = "body_format_" + that.model.get('bodyMimeType').replace("/", "_");
-                        }
-                        data['bodyFormatClass'] = bodyFormatClass;
-
-                        // Do NOT change this, it's the message id stored in the database
-                        // by annotator when storing message annotations
-                        // It has to contain ONLY raw content of the message provided by the
-                        // database for annotator to parse it back properly
-                        data['messageBodyId'] = Ctx.ANNOTATOR_MESSAGE_BODY_ID_PREFIX + data['@id'];
-                        data['isHoisted'] = that.isHoisted;
-
-                        data['ctx'] = Ctx;
-
-                        that.$el.attr("id", "message-" + data['@id']);
-                        data['read'] = that.model.get('read')
-                        data['user_is_connected'] = !Ctx.getCurrentUser().isUnknownUser();
-                        that.$el.addClass(data['@type']);
-                        if (that.model.get('read') || !data['user_is_connected']) {
-                            that.$el.addClass('read');
-                            that.$el.removeClass('unread');
-                        } else {
-                            that.$el.addClass('unread');
-                            that.$el.removeClass('read');
-                        }
-
-                        data['nuggets'] = _.size(data['extracts']);
-                        data['direct_link_url'] = "/posts/" + encodeURIComponent(data['@id']);
-
-                        data = that.transformDataBeforeRender(data);
-                        that.$el.html(that.template(data));
-                        Ctx.initTooltips(that.$el);
-                        if ( that.viewStyle == that.availableMessageViewStyles.FULL_BODY )
-                        {
-                            Ctx.convertUrlsToLinks(that.$el.children('.message-body')); // we target only the body part of the message, not the title
-                            Ctx.makeLinksShowOembedOnHover(that.$el.children('.message-body'));
-                        }
-                        Ctx.initClipboard();
-                        var partialMessage = MessagesInProgress.getMessage(modelId);
-
-                        that.replyView = new MessageSendView({
-                            'allow_setting_subject': false,
-                            'reply_message_id': modelId,
-                            'body_help_message': i18n.gettext('Type your response here...'),
-                            'cancel_button_label': null,
-                            'send_button_label': i18n.gettext('Send your reply'),
-                            'subject_label': null,
-                            'mandatory_body_missing_msg': i18n.gettext('You did not type a response yet...'),
-                            'messageList': that.messageListView,
-                            'msg_in_progress_body': partialMessage['body'],
-                            'msg_in_progress_ctx': modelId,
-                            'mandatory_subject_missing_msg': null
-                        });
-                        that.$('.message-replybox').append(that.replyView.render().el);
-
-                        that.postRender();
-
-                        if (that.replyBoxShown) {
-                            that.openReplyBox();
-                            if ( that.replyBoxHasFocus )
-                                that.focusReplyBox();
-                        }
-                        else {
-                            that.closeReplyBox();
-                        }
-
-                        if (that.viewStyle == that.availableMessageViewStyles.FULL_BODY) {
-                            //Only the full body view uses annotator
-                            that.messageListView.requestAnnotatorRefresh();
-                        }
-
-                        if (that.viewStyle == that.availableMessageViewStyles.FULL_BODY && that.messageListView.defaultMessageStyle != that.availableMessageViewStyles.FULL_BODY) {
-                            that.showReadLess();
-                        }
-
-                        if (that.viewStyle == that.availableMessageViewStyles.PREVIEW) {
-
-                            var applyEllipsis = function()
-                            {
-                                /* We use https://github.com/MilesOkeefe/jQuery.dotdotdot to show
-                                 * Read More links for message previews
-                                 */
-                                that.$(".ellipsis").dotdotdot({
-                                    after: "a.readMore",
-                                    callback: function (isTruncated, orgContent) {
-                                        //console.log("dotdotdot initialized on message", that.model.id);
-                                        //console.log(isTruncated, orgContent);
-                                        if (isTruncated)
-                                        {
-                                            that.$(".ellipsis > a.readMore, .ellipsis > p > a.readMore").removeClass('hidden');
-                                        }
-                                        else
-                                        {
-                                            that.$(".ellipsis > a.readMore, .ellipsis > p > a.readMore").addClass('hidden');
-                                            if ( data['body'].length > 610 ) // approximate string length for text which uses 4 full lines
-                                            {
-                                                console.log("there may be a problem with the dotdotdot of message ", that.model.id, "so we will maybe re-render it");
-                                                if ( ++that.reRendered < 5 ) // we use this to avoid infinite loop of render() calls
-                                                {
-                                                    console.log("yes, we will re-render => tries: ", that.reRendered);
-                                                    setTimeout(function(){
-                                                        that.render();
-                                                    }, 500);
-                                                }
-                                                else
-                                                {
-                                                    console.log("no, we won't re-render it because we already tried several times: ", that.reRendered);
-                                                }
-                                            }
-                                        }
-                                    },
-                                    watch: "window" //TODO:  We should trigger updates from the panel algorithm instead
-                                });
-                            };
-
-                            that.messageListView.requestPostRenderSlowCallback(function () {
-
-                                setTimeout(function(){
-                                    //console.log("Initializing ellipsis on message", that.model.id);
-                                    var current_navigation_state = that.messageListView.getContainingGroup().model.get('navigationState');
-                                    //console.log("current_navigation_state:", current_navigation_state);
-                                    if ( current_navigation_state == 'home' )
-                                    {
-                                        that.listenToOnce(Assembl.vent, 'navigation:selected', applyEllipsis);
-                                        return;
-                                    }
-                                    applyEllipsis();
-                                }, 100);
-                                
-
-                                /* We no longer need this, but probably now need to
-                                 * update when the panels change size with the
-                                 * new system benoitg-2014-09-18
-                                 *
-                                 * that.listenTo(that.messageListView, "messageList:render_complete", function () {
-                                 that.$(".ellipsis").trigger('update.dot');
-                                 });*/
-                            });
-
-                        }
-                    });
-                return this;
-            },
-
-            /**
              * Should be called each render
              */
             clearAnnotationsToLoadCache: function () {
@@ -333,13 +409,12 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              */
             getAnnotationsToLoadPromise: function () {
                 var that = this,
-                    deferred = $.Deferred(),
                     annotationsPromise = this.model.getAnnotationsPromise(), //TODO:  This is fairly CPU intensive, and may be worth caching.
                     annotationsToLoad = [],
                     filter;
 
-                annotationsPromise.done(function (annotations) {
-                    if (this.annotationsToLoad === undefined) {
+                return annotationsPromise.then(function (annotations) {
+                    if (that.annotationsToLoad === undefined) {
                         // Is this the right permission to see the clipboard?
                         if (!Ctx.getCurrentUser().can(Permissions.ADD_EXTRACT)) {
                             filter = function (extract) {
@@ -357,13 +432,10 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
                                 annotationsToLoad.push(annotation);
                             }
                         });
-                        this.annotationsToLoad = annotationsToLoad;
+                        that.annotationsToLoad = annotationsToLoad;
                     }
-                    deferred.resolve(this.annotationsToLoad);
+                    return that.annotationsToLoad;
                 });
-
-
-                return deferred.promise();
             },
 
             /**
@@ -400,53 +472,64 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
             showSegmentByAnnotation: function (annotation) {
                 var that = this,
                     currentIdea = this.messageListView.getContainingGroup().getCurrentIdea(),
-                    collectionManager = new CollectionManager(),
-                    ok = true;
+                    collectionManager = new CollectionManager();
+                if (annotation.idIdea == null || (
+                    currentIdea != null && currentIdea.id == annotation.idIdea))
+                  return;
+                var Modal = Backbone.Modal.extend({
+                    template: _.template($('#tmpl-showSegmentByAnnotation').html()),
+                    className: 'group-modal popin-wrapper modal-showSegment',
+                    cancelEl: '.js_close',
+                    keyControl: false,
+                    initialize: function () {
+                       this.$('.bbm-modal').addClass('popin');
+                    },
+                    events: {
+                      'click .js_redirectIdea':'redirectToIdea'
+                    },
+                    redirectToIdea: function(){
+                        var self = this;
 
-                if (currentIdea) {
-                    if (currentIdea.id !== annotation.idIdea) {
-                        ok = confirm(i18n.gettext('You will be redirected to another idea in connection with the nugget on which you clicked.'))
-                    }
-                    else {
-                        //It's already the current idea, do nothing
-                        ok = false;
-                    }
-                }
+                        Promise.join(collectionManager.getAllExtractsCollectionPromise(),
+                            collectionManager.getAllIdeasCollectionPromise(),
+                            function (allExtractsCollection, allIdeasCollection) {
 
-                if (ok) {
-                    $.when(
-                        collectionManager.getAllExtractsCollectionPromise(),
-                        collectionManager.getAllIdeasCollectionPromise()
-                    ).then(
-                        function (allExtractsCollection, allIdeasCollection) {
-                            var segment = allExtractsCollection.getByAnnotation(annotation);
-                            if (!segment) {
-                                console.error("message::showSegmentByAnnotation(): the extract doesn't exist")
-                                return;
-                            }
-                            if (segment.get('idIdea')) {
-                                if (that.messageListView.getContainingGroup().findViewByType(PanelSpecTypes.IDEA_PANEL)) {
-                                  //FIXME:  Even this isn't proper behaviour.  Maybe we should just pop a panel systematically in this case.
-                                    that.messageListView.getContainingGroup().setCurrentIdea(allIdeasCollection.get(annotation.idIdea));
-                                    Assembl.vent.trigger('DEPRECATEDideaPanel:showSegment', segment);
+                                var segment = allExtractsCollection.getByAnnotation(annotation);
+                                if (!segment) {
+                                    console.error("message::showSegmentByAnnotation(): the extract doesn't exist");
+                                    return;
                                 }
-                                else {
-                                    console.log("TODO:  NOT implemented yet.  Should pop panel in a lightbox.  See example at the end of Modal object in navigation.js ")
+                                if (segment.get('idIdea')) {
+                                    if (that.messageListView.getContainingGroup().findViewByType(PanelSpecTypes.IDEA_PANEL)) {
+                                        //FIXME:  Even this isn't proper behaviour.  Maybe we should just pop a panel systematically in this case.
+                                        that.messageListView.getContainingGroup().setCurrentIdea(allIdeasCollection.get(annotation.idIdea), "from_annotation", true);
+                                        Assembl.vent.trigger('DEPRECATEDideaPanel:showSegment', segment);
+                                    }
+                                    else {
+                                        console.log("TODO:  NOT implemented yet.  Should pop panel in a lightbox.  See example at the end of Modal object in navigation.js ");
+                                    }
+                                } else {
+                                    if (that.messageListView.getContainingGroup().findViewByType(PanelSpecTypes.CLIPBOARD)) {
+                                        //FIXME:  We don't want to affect every panel, only the one in the current group
+                                        //FIXME:  Nothing listens to this anymore
+                                        console.error("FIXME:  Nothing listens to DEPRECATEDsegmentList:showSegment anymore");
+                                        Assembl.vent.trigger('DEPRECATEDsegmentList:showSegment', segment);
+                                    }
+                                    else {
+                                        console.log("TODO:  NOT implemented yet.  Should pop panel in a lightbox.  See example at the end of Modal object in navigation.js ")
+                                    }
                                 }
-                            } else {
-                                if (that.messageListView.getContainingGroup().findViewByType(PanelSpecTypes.CLIPBOARD)) {
-                                  //FIXME:  We don't want to affect every panel, only the one in the current group
-                                  //FIXME:  Nothing listens to this anymore
-                                  console.error("FIXME:  Nothing listens to DEPRECATEDsegmentList:showSegment anymore");
-                                  Assembl.vent.trigger('DEPRECATEDsegmentList:showSegment', segment);
-                                }
-                                else {
-                                    console.log("TODO:  NOT implemented yet.  Should pop panel in a lightbox.  See example at the end of Modal object in navigation.js ")
-                                }
-                            }
-                        }
-                    );
-                }
+
+                                self.destroy();
+                            });
+                    }
+
+                });
+
+                var modal = new Modal();
+
+                $('#slider').html(modal.render().el);
+
             },
 
             /**
@@ -548,55 +631,51 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
 
             },
 
+            onMessageReplyBtnClick: function (e) {
+              e.preventDefault();
+              //So it is saved if the view refreshes
+              this.replyBoxHasFocus = true;
+              if(!this.isMessageOpened()) {
+                this.doOpenMessage();
+              }
+              else {
+                this.focusReplyBox();
+              }
+            },
+            
             /**
-             *  Focus on the reply box, and open it if closed
+             *  Focus on the reply box, and open the message if closed
              **/
             focusReplyBox: function () {
-                var that = this;
-                var onReplyBoxBlur = function(){
-                    that.replyBoxHasFocus = false;
-                };
-                var waitAndFocus = function(){
-                    // we can't execute this immediately because the opening of the message triggers a setRead(true) which triggers a redraw which looses the focus
-                    window.setTimeout(function () {
-                        var el = that.$('.messageSend-body');
-                        if ( el.length )
-                        {
-                            el.focus();
-                            that.replyBoxHasFocus = true;
-                            el.on("blur", onReplyBoxBlur);
-                        }
-                        else { // if the .messageSend-body field is not present, this means the user is not logged in, so we scroll to the alert box
-                            that.messageListView.scrollToElement(that.$(".message-replybox"));
-                        }
-                    }, 100);
-                };
-                
-                if (this.viewStyle.id === 'viewStylePreview') {
-                    this.onMessageTitleClick();
-                    waitAndFocus();
-                    return;
+              if(!this.isMessageOpened()) {
+                console.error("Tried to focus on the reply box of a closed message, this should not happen!");
+              }
+              if(!this.replyBoxHasFocus) {
+                console.error("Tried to focus on the reply box of a message that isn't supposed to have focus, this should not happen!");
+              }
+              var el = this.replyView.ui.messageBody;
+              if ( el.length ){
+                if(!el.is(':visible')) {
+                  console.error("Element not yet visible...")
                 }
-
-                this.openReplyBox();
-                waitAndFocus();
+                
+                setTimeout(function () {
+                  el.focus();
+                }, 1);//This settimeout is necessary, at least for chrome, to focus properly
+              }
+              else if (this.ui.messageReplyBox.length){ 
+                // if the .js_messageSend-body field is not present, this means the user is not logged in, so we scroll to the alert box
+                //console.log("Scrooling to reply box instead");
+                this.messageListView.scrollToElement(this.ui.messageReplyBox);
+              }
+              else {
+                console.error("Tried to focus on the reply box of a message, but reply box isn't onscreen.  This should not happen!");
+              }
             },
 
-            /**
-             *  Opens the reply box the reply button
-             */
-            openReplyBox: function () {
-                this.$('.message-replybox').show();
-                this.$('.message-replybox').removeClass('hidden');
-                this.replyBoxShown = true;
-            },
-
-            /**
-             *  Closes the reply box
-             */
-            closeReplyBox: function () {
-                this.$('.message-replybox').hide();
-                this.replyBoxShown = false;
+            onReplyBoxCancelBtnClick: function (e) {
+              this.replyBoxShown = false;
+              this.render();
             },
 
             onMessageHoistClick: function (ev) {
@@ -604,18 +683,31 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
                 this.isHoisted = this.messageListView.toggleFilterByPostId(this.model.getId());
                 this.render(); // so that the isHoisted property will now be considered
             },
+            
+            onMessageJumpToParentClick: function (ev) {
+              this.messageListView.showMessageById(this.model.get('parentId'));
+            },
 
-            /**
-             * @event
-             */
-            onShowBody: function () {
-                var read = this.model.get('read');
+            onMessageJumpToMessageInThreadClick: function (ev) {
+              this.messageListView.currentQuery.clearAllFilters();
+              this.messageListView.setViewStyle(this.messageListView.ViewStyles.NEW_MESSAGES);
+              this.messageListView.render();
+              this.messageListView.showMessageById(this.model.id);
+            },
 
-                if (read === false) {
-                    this.model.setRead(true);
-                }
-                this.setViewStyle(this.availableMessageViewStyles.FULL_BODY);
-                this.render();
+            onMessageJumpToMessageInReverseChronologicalClick: function (ev) {
+              this.messageListView.currentQuery.clearAllFilters();
+              this.messageListView.setViewStyle(this.messageListView.ViewStyles.REVERSE_CHRONOLOGICAL);
+              this.messageListView.render();
+              this.messageListView.showMessageById(this.model.id);
+            },
+            
+            
+            onShowAllMessagesByThisAuthorClick: function (ev) {
+              this.messageListView.currentQuery.clearAllFilters();
+              this.messageListView.currentQuery.addFilter(this.messageListView.currentQuery.availableFilters.POST_IS_FROM, this.model.get('idCreator'));
+              this.messageListView.render();
+              this.messageListView.showMessageById(this.model.id);
             },
 
             /**
@@ -633,7 +725,6 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
                     this.$el.removeClass(this.availableMessageViewStyles.PREVIEW.id);
                     this.$el.addClass(this.availableMessageViewStyles.FULL_BODY.id);
                     this.viewStyle = style;
-                    this.replyBoxShown = true;
 
                 }
                 else if (style == this.availableMessageViewStyles.PREVIEW) {
@@ -647,30 +738,90 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
                 }
             },
 
-            toggleViewStyle: function () {
-                var previousViewStyle = this.viewStyle;
-                if (this.viewStyle == this.availableMessageViewStyles.FULL_BODY) {
-                    this.setViewStyle(this.messageListView.getTargetMessageViewStyleFromMessageListConfig(this));
-                }
-                else {
-                    var read = this.model.get('read');
-                    if (read === false) {
-                        this.model.setRead(true);
-                    }
-                    this.setViewStyle(this.availableMessageViewStyles.FULL_BODY);
-                }
-                if (previousViewStyle !== this.viewStyle) {
-                    this.render();
-                }
+            /**
+             * Is the message currently in it's "opened" state?
+             */
+            isMessageOpened: function () {
+              if(this.viewStyle === this.availableMessageViewStyles.FULL_BODY &&
+                 this.replyBoxShown === true) {
+                 return true;
+              }
+              else {
+                return false;
+              }
             },
+
+            /**
+             * move the message to it's "opened" state (FULL_BODY, reply box shown
+             * etc.
+             */
+            doOpenMessage: function () {
+              if(!this.isMessageOpened()) {
+                this.setViewStyle(this.availableMessageViewStyles.FULL_BODY);
+                this.replyBoxShown = true;
+                this.render();
+              }
+              else {
+                //Message is already in the right state
+              }
+              var read = this.model.get('read');
+              if (read === false) {
+                this.model.setRead(true);
+              }
+            },
+
+            /**
+             * move the message to it's "closed" state, which is dependent on the 
+             * view
+             */
+            doCloseMessage: function () {
+              if(this.isMessageOpened()) {
+                this.setViewStyle(this.messageListView.getTargetMessageViewStyleFromMessageListConfig(this));
+                this.replyBoxShown = false;
+                this.render();
+              }
+              else {
+                //Message is already in the right state
+              }
+            },
+
+            /**
+             * Change the message view Style and re-render.
+             * In most cases will switch between FULL_BODY and another view
+             */
+            toggleViewStyle: function () {
+              this.isMessageOpened()?this.doCloseMessage():this.doOpenMessage();
+            },
+            
             /**
              * @event
              */
-            onMessageTitleClick: function (ev) {
-                this.toggleViewStyle();
-                if (this.viewStyle == this.availableMessageViewStyles.FULL_BODY) {
-                    this.openReplyBox();
+            onMessageTitleClick: function (e) {
+                if(e) {
+                  var target = $(e.target);
+                  if(target.is('a') && !(
+                      target.hasClass('js_readMore') || target.hasClass('js_readLess')))
+                    return;
+                  e.stopPropagation();
+                  e.preventDefault();
                 }
+                this.doProcessMessageTitleClick();
+            },
+
+            /**
+             */
+            doProcessMessageTitleClick: function () {
+                this.toggleViewStyle();
+            },
+            
+            /** 
+             * This il only called by messageList::showMessageById
+             */
+            onOpenWithFullBodyView: function(e) {
+              //console.log("onOpenWithFullBodyView()");
+              if(!this.isMessageOpened()) {
+                this.doOpenMessage();
+              }
             },
 
             /**
@@ -678,15 +829,21 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              * Starts annotator text selection process
              */
             startAnnotatorTextSelection: function () {
-                this.hideAnnotatorSelectionTooltip();
-                this.isSelecting = true;
-                this.$el.addClass('is-selecting');
+              if(Ctx.debugAnnotator) {
+                console.log("startAnnotatorTextSelection called");
+              }
+              if(this.messageListView.isInPrintableView()) {
+                return;
+              }
+              this.hideAnnotatorSelectionTooltip();
+              this.isSelecting = true;
+              this.$el.addClass('is-selecting');
 
-                var that = this;
+              var that = this;
 
-                $(document).one('mouseup', function (ev) {
-                    that.finishAnnotatorTextSelection(ev);
-                });
+              $(document).one('mouseup', function (ev) {
+                that.finishAnnotatorTextSelection(ev);
+              });
             },
 
             /**
@@ -694,45 +851,60 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              * Does the selection
              */
             updateAnnotatorTextSelection: function (ev) {
+              if(Ctx.debugAnnotator) {
+                console.log("updateAnnotatorTextSelection called");
+              }
+              if(this.messageListView.isInPrintableView()) {
+                return;
+              }
                 if (!this.isSelecting) {
-                    return;
-                }
+                return;
+              }
 
-                if ($(ev.target).closest('.is-selecting').length === 0) {
-                    // If it isn't inside the one which started, don't show it
-                    return;
-                }
+              if ($(ev.target).closest('.is-selecting').length === 0) {
+                // If it isn't inside the one which started, don't show it
+                return;
+              }
 
-                var selectedText = this.getSelectedText(),
-                    text = selectedText.focusNode ? selectedText.getRangeAt(0).cloneContents() : '';
+              var selectedText = this.getSelectedText(), text = selectedText.focusNode ? selectedText
+                  .getRangeAt(0).cloneContents()
+                  : '';
 
-                text = text.textContent || '';
+              text = text.textContent || '';
 
-                if (text.length > MIN_TEXT_TO_TOOLTIP) {
-                    this.showAnnotatorSelectionTooltip(ev.clientX, ev.clientY, text);
-                } else {
-                    this.hideAnnotatorSelectionTooltip();
-                }
+              if (text.length > MIN_TEXT_TO_TOOLTIP) {
+                this
+                    .showAnnotatorSelectionTooltip(ev.clientX, ev.clientY, text);
+              }
+              else {
+                this.hideAnnotatorSelectionTooltip();
+              }
             },
 
             /**
              * @event
              */
             onMouseLeaveMessageBodyAnnotatorSelectionAllowed: function () {
-                if (this.isSelecting) {
-                    this.hideAnnotatorSelectionTooltip();
-                    this.isSelecting = false;
-                    this.$el.removeClass('is-selecting');
-                    (function deselect() {
-                        var selection = ('getSelection' in window)
-                            ? window.getSelection()
-                            : ('selection' in document)
-                            ? document.selection
-                            : null;
-                        if ('removeAllRanges' in selection) selection.removeAllRanges();
-                        else if ('empty' in selection) selection.empty();
-                    })();
-                }
+              if(Ctx.debugAnnotator) {
+                console.log("onMouseLeaveMessageBodyAnnotatorSelectionAllowed called");
+              }
+              if(this.messageListView.isInPrintableView()) {
+                return;
+              }
+              if (this.isSelecting) {
+                this.hideAnnotatorSelectionTooltip();
+                this.isSelecting = false;
+                this.$el.removeClass('is-selecting');
+                (function deselect() {
+                  var selection = ('getSelection' in window)
+                  ? window.getSelection()
+                      : ('selection' in document)
+                      ? document.selection
+                          : null;
+                  if ('removeAllRanges' in selection) selection.removeAllRanges();
+                  else if ('empty' in selection) selection.empty();
+                })();
+              }
 
             },
 
@@ -742,14 +914,17 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              * @return {Selection}
              */
             getSelectedText: function () {
-                if (document.getSelection) {
-                    return document.getSelection();
-                } else if (window.getSelection) {
-                    return window.getSelection();
-                } else {
-                    var selection = document.selection && document.selection.createRange();
-                    return selection.text ? selection.text : false;
-                }
+              if(Ctx.debugAnnotator) {
+                console.log("getSelectedText called");
+              }
+              if (document.getSelection) {
+                return document.getSelection();
+              } else if (window.getSelection) {
+                return window.getSelection();
+              } else {
+                var selection = document.selection && document.selection.createRange();
+                return selection.text ? selection.text : false;
+              }
             },
 
             /**
@@ -757,25 +932,31 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              * @event
              */
             finishAnnotatorTextSelection: function (ev) {
-                var isInsideAMessage = false,
-                    selectedText = this.getSelectedText(),
-                    user = Ctx.getCurrentUser(),
-                    text = selectedText.focusNode ? selectedText.getRangeAt(0).cloneContents() : '';
+              var isInsideAMessage = false,
+                  selectedText = this.getSelectedText(),
+                  user = Ctx.getCurrentUser(),
+                  text = selectedText.focusNode ? selectedText.getRangeAt(0).cloneContents() : '';
 
-                text = text.textContent || '';
+              if(Ctx.debugAnnotator) {
+                console.log("finishAnnotatorTextSelection called");
+              }
+              text = text.textContent || '';
 
-                if (ev) {
-                    isInsideAMessage = $(ev.target).closest('.is-selecting').length > 0;
+              if (ev) {
+                isInsideAMessage = $(ev.target).closest('.is-selecting').length > 0;
+              }
+
+              if (this.isSelecting && text.length > MIN_TEXT_TO_TOOLTIP && isInsideAMessage) {
+                if(user.can(Permissions.ADD_EXTRACT)) {
+                  this.showAnnotatorSelectionSaveOptions(ev.clientX - 50, ev.clientY);
                 }
-
-                if (user.can(Permissions.ADD_EXTRACT) && this.isSelecting && text.length > MIN_TEXT_TO_TOOLTIP && isInsideAMessage) {
-                    this.showAnnotatorSelectionSaveOptions(ev.clientX - 50, ev.clientY);
-                } else if (!user.can(Permissions.ADD_EXTRACT)) {
-                    console.warn('finishAnnotatorTextSelection() called but current user does not have Permissions.ADD_EXTRACT');
+                else {
+                  console.warn('finishAnnotatorTextSelection() called but current user does not have Permissions.ADD_EXTRACT');
                 }
+              }
 
-                this.isSelecting = false;
-                this.$el.removeClass('is-selecting');
+              this.isSelecting = false;
+              this.$el.removeClass('is-selecting');
             },
 
             /**
@@ -806,12 +987,17 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
                 this.model.setRead(true);
             },
 
-            onTextboxFocus: function(){
-                if ( !this.model.get('read') )
-                {
-                    this.model.setRead(true); // we do not call markAsRead on purpose
-                    this.focusReplyBox();
-                }
+            onReplyBoxFocus: function(e){
+              this.replyBoxHasFocus = true;
+              if ( !this.model.get('read') ) {
+                  this.model.setRead(true); // we do not call markAsRead on purpose
+              }
+              Assembl.vent.trigger('messageList:replyBoxFocus');
+            },
+
+            onReplyBoxBlur: function(e){
+              this.replyBoxHasFocus = false;
+              Assembl.vent.trigger('messageList:replyBoxBlur');
             },
 
             /**
@@ -819,6 +1005,11 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/i1
              * */
             showReadLess: function () {
                 this.$('.readLess').removeClass('hidden');
+            },
+
+            openTargetInPopOver: function (evt) {
+                console.log("message openTargetInPopOver(evt: ", evt);
+                return Ctx.openTargetInPopOver(evt);
             }
 
 

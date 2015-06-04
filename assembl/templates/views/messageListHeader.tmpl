@@ -1,0 +1,36 @@
+{% macro expert_view_toggle_button() -%}
+<% if ( expertViewIsAvailable ) { %>
+<div class="show-expert-mode">
+  <span class="show-expert-mode-label">{{ gettext('More options') }}</span>
+  <div class="show-expert-mode-toggle-button"></div>
+</div>
+<% } %>
+{%- endmacro %}
+
+<% if (!isUsingExpertView) { %>
+  <% if (!Ctx.getCurrentUser().isUnknownUser()) { %>
+    <div class="options-filter">
+      <div class="options-filter-items">
+        <div class="messageListViewStyleUserHighlightNew <%= availableViewStyles.NEW_MESSAGES.css_class %> option tac pas"></div>
+        {# <div class="messageListViewStyleUserThreaded <%= availableViewStyles.THREADED.css_class %> option tac pas"></div> #}
+        <div class="js_messageListViewStyleUserActivityFeed <%= availableViewStyles.REVERSE_CHRONOLOGICAL.css_class %> option tac pas"></div>
+      </div>
+      {{ expert_view_toggle_button() }}
+    </div>
+  <% } %>
+<% } else { %>
+  <div class="view-config pll pvxs">
+    <ul class="config pan man ptxs">
+      <li class="dropdown fl mrs mbxs js_messageListViewStyle-dropdown"></li>
+      <li class="dropdown fl mrs mbxs js_defaultMessageView-dropdown"></li>
+      <li class="dropdown fl mrs mbxs js_filters-dropdown"></li>
+      <li class="clr"></li>
+    </ul>
+    <a class="js_messageListView-print btn btn-secondary btn-xs" data-toggle="tooltip" title="" data-placement="bottom" data-original-title="Format message in a view useful for copy-pasting of printing">Print</a>
+    {{ expert_view_toggle_button() }}
+
+
+  </div>
+<% } %>
+
+  <div class="messageList-query-info pll pts"></div>

@@ -45,6 +45,9 @@ UPDATE_OP = 0
 INSERT_OP = 1
 
 
+class ObjectNotUniqueError(ValueError):
+    pass
+
 class CleanupStrategy(strategies.PlainEngineStrategy):
     name = 'atexit_cleanup'
 
@@ -64,6 +67,7 @@ def dispose_sqlengines():
 _TABLENAME_RE = re.compile('([A-Z]+)')
 
 _session_maker = None
+_session_makers = {True: None, False: None }
 db_schema = None
 _metadata = None
 Base = TimestampedBase = None
@@ -123,10 +127,19 @@ class BaseOps(object):
     #     return _TABLENAME_RE.sub(r'_\1', cls.__name__).strip('_').lower()
 
     @classproperty
-    def db(cls):
-        """Return the SQLAlchemy db session maker object."""
+    def default_db(cls):
+        """Return the global SQLAlchemy db session maker object."""
         assert _session_maker is not None
         return _session_maker
+
+    @property
+    def db(self):
+        """Return the SQLAlchemy db session object."""
+        return inspect(self).session or self.default_db()
+
+    @property
+    def object_session(self):
+        return object_session(self)
 
     def __iter__(self, **kwargs):
         """Return a generator that iterates through model columns."""
@@ -203,10 +216,10 @@ class BaseOps(object):
         return raise_ and q.one() or q.first()
 
     @classmethod
-    def get(cls, id):
-        """Return the record by id.
-        """
-        return _session_maker.query(cls).get(id)
+    def get(cls, id, session=None):
+        """Return the record by id."""
+        session = session or cls.default_db
+        return session.query(cls).get(id)
 
     @classmethod
     def find(cls, **criteria):
@@ -258,7 +271,7 @@ class BaseOps(object):
         if not connection:
             # WARNING: invalidate has to be called within an active transaction.
             # This should be the case in general, no need to add a transaction manager.
-            connection = self.db().connection()
+            connection = self.db.connection()
         if 'cdict' not in connection.info:
             connection.info['cdict'] = {}
         connection.info['cdict'][self.uri()] = (
@@ -336,6 +349,42 @@ class BaseOps(object):
 
     def uri(self, base_uri='local:'):
         return self.uri_generic(self.get_id_as_str(), base_uri)
+
+    @classmethod
+    def get_subclasses(cls):
+        global class_registry
+        from inspect import isclass
+        return (c for c in class_registry.itervalues()
+                if isclass(c) and issubclass(c, cls))
+
+    @classmethod
+    def get_inheritance(cls):
+        name = cls.external_typename()
+        inheritance = {}
+        for subclass in cls.get_subclasses():
+            subclass_name = subclass.external_typename()
+
+            if subclass_name == name:
+                continue
+            for supercls in subclass.mro()[1:]:
+                if not supercls.__dict__.get('__mapper_args__', {}).get('polymorphic_identity', None):
+                    continue
+                superclass_name = supercls.external_typename()
+                inheritance[subclass_name] = superclass_name
+                if (superclass_name == name
+                        or superclass_name in inheritance):
+                    break
+                subclass_name = superclass_name
+        return inheritance
+
+    @staticmethod
+    def get_json_inheritance_for(*classnames):
+        inheritance = {}
+        classnames = set(classnames)
+        for name in classnames:
+            cls = get_named_class(name)
+            inheritance.update(cls.get_inheritance())
+        return dumps(inheritance)
 
     def change_class(self, newclass, json=None, **kwargs):
         def table_list(cls):
@@ -736,7 +785,7 @@ class BaseOps(object):
         discussion = context.get_instance_of_class(Discussion)
         permissions = get_permissions(
             user_id, discussion.id if discussion else None)
-        with cls.db.no_autoflush:
+        with cls.default_db.no_autoflush:
             # We need this to allow db.is_modified to work well
             return cls._do_create_from_json(
                 json, parse_def, {}, context, permissions, user_id)
@@ -763,12 +812,12 @@ class BaseOps(object):
         elif result is not inst and \
             not result.user_can(
                 user_id, CrudPermissions.UPDATE, permissions
-                ) and cls.db.is_modified(result, False):
+                ) and cls.default_db.is_modified(result, False):
             raise HTTPUnauthorized(
                 "User id <%s> cannot modify a <%s> object" % (
                     user_id, cls.__name__))
         if result is not inst:
-            cls.db.add(result)
+            cls.default_db.add(result)
             result_id = result.uri()
             if '@id' in json and result_id != json['@id']:
                 aliases[json['@id']] = result
@@ -801,6 +850,7 @@ class BaseOps(object):
             self, json, parse_def, aliases, context, permissions,
             user_id, duplicate_error=True):
         assert isinstance(json, dict)
+        is_created = self.id is None
         typename = json.get("@type", None)
         if typename and typename != self.external_typename() and \
                 typename in self.retypeable_as:
@@ -1051,6 +1101,7 @@ class BaseOps(object):
                 # Hence we do not handle well the case of simple
                 # string or dict properties
                 setattr(self, accessor_name, value)
+                continue
             elif value is None:
                 # TODO: if a 1-Many list, clear elements?
                 pass
@@ -1108,32 +1159,65 @@ class BaseOps(object):
                     instance = context.get_instance_of_class(target_class)
                 if instance is not None:
                     setattr(self, reln.key, instance)
+        return self.handle_duplication(
+            json, parse_def, aliases, context, permissions, user_id,
+            duplicate_error)
+
+    def handle_duplication(
+                self, json, parse_def, aliases, context, permissions, user_id,
+                duplicate_error):
         # Issue: unique_query MAY trigger a flush, which will
         # trigger an error if columns are missing, including in a call above.
         # But without the flush, some relations will not be interpreted
         # correctly. Strive to avoid the flush in most cases.
-        unique_query = self.db.query(self.__class__)
-        unique_query, usable = self.unique_query(unique_query)
+        unique_query, usable = self.unique_query()
         if usable:
             other = unique_query.first()
             if other and other is not self:
+                if inspect(self).pending:
+                    other.db.expunge(self)
                 if duplicate_error:
-                    raise HTTPBadRequest("Duplicate object created")
+                    raise HTTPBadRequest("Duplicate of <%s> created" % (other.uri()))
                 else:
-                    # Presumably not necessary as never added.
-                    # db.delete(self)
                     # TODO: Check if there's a risk of infinite recursion here?
                     return other._do_update_from_json(
                         json, parse_def, aliases, context, permissions,
                         user_id, duplicate_error)
         return self
 
-    def unique_query(self, query):
+    def unique_query(self):
+        """returns a couple (query, usable), with a sqla query for conflicting similar objects.
+        usable is true if the query has to be enforced; sometimes it makes sense to
+        return un-usable query that will be used to construct queries of subclasses.
+        Note that when a duplicate is found, you'll often want to expunge the original.
+        """
         # To be reimplemented in subclasses with a more intelligent check.
         # See notification for example.
-        if self.id is None:
-            return (query, False)
-        return (query.filter_by(id=self.id), True)
+        return self.db.query(self.__class__), False
+
+    def find_duplicate(self, expunge=True, must_define_uniqueness=False):
+        """Verifies that no other object exists that would conflict.
+        See unique_query for usable flag."""
+        query, usable = self.unique_query()
+        if must_define_uniqueness:
+            assert usable, "Class %s needs a valid unique_query" % (
+                self.__class__.__name__)
+        if not usable:
+            return True
+        other = query.first()
+        if other is not None and other is not self:
+            if expunge and inspect(self).pending:
+                other.db.expunge(self)
+            return other
+
+    def get_unique_from_db(self, expunge=True):
+        "Returns the object, or a unique object from the DB"
+        return self.find_duplicate(expunge, True) or self
+
+    def assert_unique(self):
+        duplicate = self.find_duplicate()
+        if duplicate is not None:
+            raise ObjectNotUniqueError("Duplicate of <%s> created" % (duplicate.uri()))
 
     @classmethod
     def extra_collections(cls):
@@ -1237,20 +1321,47 @@ event.listen(mapper, 'before_insert', insert_timestamp)
 event.listen(mapper, 'before_update', update_timestamp)
 
 
-def get_session_maker(zope_tr=True):
-    global _session_maker
+def make_session_maker(zope_tr=True, autoflush=True):
+    return scoped_session(sessionmaker(
+        autoflush=autoflush,
+        extension=ZopeTransactionExtension() if zope_tr else None))
+
+
+def initialize_session_maker(zope_tr=True, autoflush=True):
+    "Initialize the application global sessionmaker object"
+    global _session_maker, _session_makers
+    assert _session_maker is None or _session_maker == _session_makers[not zope_tr]
+    session_maker = make_session_maker(zope_tr, autoflush)
+    _session_makers[zope_tr] = session_maker
     if _session_maker is None:
-        # This path is executed once, and maybe not when you expect it.
-        # nosetest may fail if the session_maker is built with the ZTE.
-        # This will happen if any of the models is imported before the
-        # nose plugin is configured. In that case, trace the importation thus:
-        # print "ZOPISH SESSIONS: ", zope_tr
-        # import traceback; traceback.print_stack();
-        ext = None
-        if zope_tr:
-            ext = ZopeTransactionExtension()
-        _session_maker = scoped_session(sessionmaker(extension=ext))
+        # The global object is the first one initialized
+        _session_maker = session_maker
+    return session_maker
+
+
+def session_maker_is_initialized():
+    global _session_maker
+    return _session_maker is not None
+
+
+def get_session_maker():
+    "Get the application global sessionmaker object"
+    global _session_maker
+    assert _session_maker is not None
     return _session_maker
+
+
+def get_typed_session_maker(zope_tr, autoflush=True):
+    global _session_makers
+    zope_tr = bool(zope_tr)
+    if _session_makers[zope_tr] is None:
+        _session_makers[zope_tr] = initialize_session_maker(zope_tr, autoflush)
+    return _session_makers[zope_tr]
+
+
+def set_session_maker_type(zope_tr):
+    global _session_maker
+    _session_maker = get_typed_session_maker(zope_tr)
 
 
 class Tombstone(object):
@@ -1339,17 +1450,24 @@ event.listen(BaseOps, 'after_update', orm_update_listener, propagate=True)
 event.listen(BaseOps, 'after_delete', orm_delete_listener, propagate=True)
 
 
-def configure_engine(settings, zope_tr=True, session_maker=None):
+def configure_engine(settings, zope_tr=True, autoflush=True, session_maker=None):
     """Return an SQLAlchemy engine configured as per the provided config."""
     if session_maker is None:
-        session_maker = get_session_maker(zope_tr)
+        if session_maker_is_initialized():
+            print "ERROR: Initialized twice."
+            session_maker = get_session_maker()
+        else:
+            session_maker = initialize_session_maker(zope_tr, autoflush)
     engine = session_maker.session_factory.kw['bind']
     if engine:
         return engine
     engine = engine_from_config(settings, 'sqlalchemy.')
     session_maker.configure(bind=engine)
     global db_schema, _metadata, Base, TimestampedBase, ObsoleteBase, TimestampedObsolete
-    db_schema = '.'.join((settings['db_schema'], settings['db_user']))
+    if settings['sqlalchemy.url'].startswith('virtuoso:'):
+        db_schema = '.'.join((settings['db_schema'], settings['db_user']))
+    else:
+        db_schema = settings['db_schema']
     _metadata = MetaData(schema=db_schema)
     Base, TimestampedBase = declarative_bases(_metadata, class_registry)
     obsolete = MetaData(schema=db_schema)
@@ -1372,8 +1490,9 @@ def is_zopish():
         ZopeTransactionExtension)
 
 
-def mark_changed():
-    z_mark_changed(get_session_maker()())
+def mark_changed(session=None):
+    session = session or get_session_maker()()
+    z_mark_changed(session)
 
 
 def get_metadata():

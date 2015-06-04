@@ -1,7 +1,7 @@
 'use strict';
 
-define(['backbone.marionette', 'common/collectionManager', 'utils/permissions', 'common/context', 'utils/i18n', 'jquery'],
-    function (Marionette, CollectionManager, Permissions, Ctx, i18n, $) {
+define(['backbone.marionette', 'common/collectionManager', 'utils/permissions', 'common/context', 'utils/i18n', 'jquery', 'bluebird'],
+    function (Marionette, CollectionManager, Permissions, Ctx, i18n, $, Promise) {
 
         var notifications = Marionette.ItemView.extend({
             template: '#tmpl-adminNotification',
@@ -49,14 +49,9 @@ define(['backbone.marionette', 'common/collectionManager', 'utils/permissions', 
             events: {
                 'click @ui.autoSubscribeCheckbox': 'updateAutoSubscribe'
             },
-            serializeData: function () {
-                return {
-                    discussion: this.model
-                }
-            },
+
             updateAutoSubscribe: function(){
-                var that = this,
-                    val = (this.$('.autoSubscribe:checked').val()) ? true : false;
+                var val = (this.$('.autoSubscribe:checked').val()) ? true : false;
 
                 this.model.set('subscribe_to_notifications_on_signup', val);
 
@@ -85,7 +80,6 @@ define(['backbone.marionette', 'common/collectionManager', 'utils/permissions', 
                'click @ui.close': 'close'
             },
             initialize: function () {
-                this.collectionManager = new CollectionManager();
 
                 if (!Ctx.getCurrentUser().can(Permissions.ADMIN_DISCUSSION)) {
                     // TODO ghourlier: Éviter que les gens n'ayant pas l'autorisation accèdent à cet écran.
@@ -95,11 +89,12 @@ define(['backbone.marionette', 'common/collectionManager', 'utils/permissions', 
             },
 
             onBeforeShow: function(){
-                var that = this;
+                var that = this,
+                    collectionManager = new CollectionManager();
 
-                $.when(this.collectionManager.getDiscussionModelPromise(),
-                    this.collectionManager.getNotificationsDiscussionCollectionPromise())
-                    .then(function (Discussion, NotificationsDiscussion) {
+                Promise.join(collectionManager.getDiscussionModelPromise(),
+                    collectionManager.getNotificationsDiscussionCollectionPromise(),
+                    function (Discussion, NotificationsDiscussion) {
 
                         var defaultNotif = new defaultNotification({
                             model: Discussion

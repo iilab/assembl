@@ -1,7 +1,5 @@
 from celery import Celery
-from zope.component import getGlobalSiteManager
 from zope import interface
-from kombu import Exchange, Queue
 
 from . import init_task_config, config_celery_app
 from ..lib.model_watcher import IModelEventWatcher
@@ -9,14 +7,7 @@ from ..lib.sqla import get_model_watcher
 
 # broker specified
 notif_dispatch_celery_app = Celery('celery_tasks.notification_dispatch')
-notif_dispatch_celery_app._preconf = {
-    "CELERY_DEFAULT_QUEUE": 'notification_dispatch',
-    "CELERY_QUEUES": (Queue(
-        'notification_dispatch', Exchange('default'),
-        routing_key='notification_dispatch'),)}
 
-
-watcher = None
 
 class ModelEventWatcherCeleryReceiver(object):
     interface.implements(IModelEventWatcher)
@@ -62,42 +53,49 @@ class ModelEventWatcherCeleryReceiver(object):
         self.mw.processAccountModified(id)
 
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+@notif_dispatch_celery_app.task()
 def processPostCreatedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processPostCreated(id)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processIdeaCreatedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processIdeaCreated(id)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processIdeaModifiedTask(id, version):
     ModelEventWatcherCeleryReceiver.get_instance().processIdeaModified(id, version)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processIdeaDeletedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processIdeaDeleted(id)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processExtractCreatedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processExtractCreated(id)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processExtractModifiedTask(id, version):
     ModelEventWatcherCeleryReceiver.get_instance().processExtractModified(id, version)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processExtractDeletedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processExtractDeleted(id)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processAccountCreatedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processAccountCreated(id)
 
-@notif_dispatch_celery_app.task(ignore_result=True)
+
+@notif_dispatch_celery_app.task()
 def processAccountModifiedTask(id):
     ModelEventWatcherCeleryReceiver.get_instance().processAccountModified(id)
-
 
 
 class ModelEventWatcherCelerySender(object):

@@ -1,7 +1,7 @@
 'use strict';
 
-define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery', 'app', 'common/context', 'models/message', 'models/synthesis', 'models/idea', 'utils/permissions', 'views/ideaFamily', 'views/ideaInSynthesis', 'utils/panelSpecTypes', 'views/assemblPanel', 'utils/i18n', 'views/editableField', 'views/ckeditorField', 'common/collectionManager'],
-    function (objectTreeRenderVisitor, Raven, _, $, Assembl, Ctx, MessageModel, Synthesis, Idea, Permissions, IdeaFamilyView, IdeaInSynthesisView, PanelSpecTypes, AssemblPanel, i18n, EditableField, CKEditorField, CollectionManager) {
+define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery', 'app', 'common/context', 'models/message', 'models/synthesis', 'models/idea', 'utils/permissions', 'views/ideaFamily', 'views/ideaInSynthesis', 'utils/panelSpecTypes', 'views/assemblPanel', 'utils/i18n', 'views/editableField', 'views/ckeditorField', 'common/collectionManager', 'bluebird'],
+    function (objectTreeRenderVisitor, Raven, _, $, Assembl, Ctx, MessageModel, Synthesis, Idea, Permissions, IdeaFamilyView, IdeaInSynthesisView, PanelSpecTypes, AssemblPanel, i18n, EditableField, CKEditorField, CollectionManager, Promise) {
 
         var SynthesisPanel = AssemblPanel.extend({
             template: '#tmpl-synthesisPanel',
@@ -20,9 +20,9 @@ define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery
                 // that publishes this synthesis
                 this.messageListView = obj.messageListView;
                 this.ideas = new Idea.Collection();
-                $.when(collectionManager.getAllSynthesisCollectionPromise(),
-                    collectionManager.getAllIdeasCollectionPromise()
-                ).then(function (synthesisCollection, allIdeasCollection) {
+                Promise.join(collectionManager.getAllSynthesisCollectionPromise(),
+                            collectionManager.getAllIdeasCollectionPromise(),
+                    function (synthesisCollection, allIdeasCollection) {
                         var rootIdea = allIdeasCollection.getRootIdea(),
                             raw_ideas;
 
@@ -49,7 +49,9 @@ define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery
                             that.ideas.reset(ideas);
                         }
                         that.listenTo(that.ideas, 'add remove reset', that.render);
-                        that.listenTo(that.model, 'reset change', that.render);
+
+                        //modelEvents should handler this
+                        //that.listenTo(that.model, 'reset change', that.render);
                     });
 
 
@@ -57,8 +59,11 @@ define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery
             },
 
             events: {
-                'click .synthesisPanel-publishButton': 'publish',
-                'click .synthesisPanel-fullscreenButton': 'setFullscreen'
+                'click .synthesisPanel-publishButton': 'publish'
+            },
+
+            modelEvents:{
+              'reset change':'render'
             },
 
             getTitle: function () {
@@ -110,9 +115,9 @@ define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery
 
                 Ctx.removeCurrentlyDisplayedTooltips(this.$el);
 
-                $.when(collectionManager.getAllSynthesisCollectionPromise(),
-                    collectionManager.getAllIdeasCollectionPromise()
-                ).then(function (synthesisCollection, allIdeasCollection) {
+                Promise.join(collectionManager.getAllSynthesisCollectionPromise(),
+                    collectionManager.getAllIdeasCollectionPromise(),
+                    function (synthesisCollection, allIdeasCollection) {
                         // Getting the scroll position
                         if (!that.model) {
                             window.setTimeout(function () {
@@ -178,20 +183,13 @@ define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery
                             conclusionField.renderTo(that.$('.synthesisPanel-conclusion'));
                         }
                         else {
-                            that.$('.synthesisPanel-title').append(that.model.get('subject'));
-                            that.$('.synthesisPanel-introduction').append(that.model.get('introduction'));
-                            that.$('.synthesisPanel-conclusion').append(that.model.get('conclusion'));
+                            that.$('.synthesisPanel-title').html(that.model.get('subject'));
+                            that.$('.synthesisPanel-introduction').html(that.model.get('introduction'));
+                            that.$('.synthesisPanel-conclusion').html(that.model.get('conclusion'));
                         }
                     });
 
                 return this;
-            },
-
-            /**
-             * Sets the panel as full screen
-             */
-            setFullscreen: function () {
-                Ctx.setFullscreen(this);
             },
 
             /**
@@ -208,42 +206,33 @@ define(['views/visitors/objectTreeRenderVisitor', 'raven', 'underscore', 'jquery
              * Publishes the synthesis
              */
             _publish: function () {
+                this.blockPanel();
+
                 var publishes_synthesis_id = this.model.id,
-                    url = Ctx.getApiUrl('posts'),
                     that = this;
 
-                var doPublish = function () {
-                    var data = {
-                        publishes_synthesis_id: publishes_synthesis_id,
-                        subject: "Not used",
-                        message: "Not used"
-                    };
+                var synthesisMessage = new MessageModel.Model({
+                    publishes_synthesis_id: publishes_synthesis_id,
+                    subject: "Not used",
+                    message: "Not used"
+                });
 
-                    var synthesisMessage = new MessageModel.Model({
-                        publishes_synthesis_id: publishes_synthesis_id,
-                        subject: "Not used",
-                        message: "Not used"
-                    });
+                synthesisMessage.save(null, {
+                    success: function (model, resp) {
+                        alert(i18n.gettext("Synthesis has been successfully published!"));
+                        that.model = new Synthesis.Model({'@id': 'next_synthesis'});
+                        that.model.fetch();
+                        that.unblockPanel();
+                    },
+                    error: function (model, resp) {
+                        Raven.captureMessage('Failed publishing synthesis!');
+                        alert(i18n.gettext("Failed publishing synthesis!"));
+                        that.model = new Synthesis.Model({'@id': 'next_synthesis'});
+                        that.model.fetch();
+                        that.unblockPanel();
+                    }
+                });
 
-                    synthesisMessage.save(null, {
-                        success: function (model, resp) {
-                            alert(i18n.gettext("Synthesis has been successfully published!"));
-                            that.model = new Synthesis.Model({'@id': 'next_synthesis'});
-                            that.model.fetch();
-                            that.unblockPanel();
-                        },
-                        error: function (model, resp) {
-                            Raven.captureMessage('Failed publishing synthesis!');
-                            alert(i18n.gettext("Failed publishing synthesis!"));
-                            that.model = new Synthesis.Model({'@id': 'next_synthesis'});
-                            that.model.fetch();
-                            that.unblockPanel();
-                        }
-                    });
-                };
-
-                that.blockPanel();
-                doPublish();
             }
 
         });

@@ -31,6 +31,7 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
             initialize: function (options, view_data) {
                 var that = this;
                 this.view_data = view_data;
+                this.parentView = options.parentView;
                 if(options.groupContent) {
                   this._groupContent = options.groupContent;
                 }
@@ -38,11 +39,11 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                   throw new Error("groupContent must be passes in constructor options");
                 }
 
-                this.listenTo(this.model, 'change', this.render);
+                this.listenTo(this.model, 'change change:inNextSynthesis', this.render);
                 this.listenTo(this.model, 'replacedBy', this.onReplaced);
 
-                this.listenTo(this._groupContent, 'idea:set', function (idea) {
-                    that.onIsSelectedChange(idea);
+                this.listenTo(this._groupContent, 'idea:set', function (idea, reason, doScroll) {
+                    that.onIsSelectedChange(idea, reason, doScroll);
                 });
             },
 
@@ -93,8 +94,10 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                 }
 
                 data.Ctx = Ctx;
+                data.idea_css_class = this.model.getCssClassFromId();
 
                 data.shortTitle = this.model.getShortTitleDisplayText();
+
                 this.$el.html(this.template(data));
                 Ctx.initTooltips(this.$el);
                 var rendered_children = [];
@@ -126,7 +129,7 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
             /**
              * @event
              */
-            onIsSelectedChange: function (idea) {
+            onIsSelectedChange: function (idea, reason, doScroll) {
                 //console.log("IdeaView:onIsSelectedChange(): new: ", idea, "current: ", this.model, this);
                 if (idea === this.model) {
                     this.$el.addClass('is-selected');
@@ -168,12 +171,14 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
              * Select this idea as the current idea
              */
             onTitleClick: function (e) {
-                var messageListView;
+                var messageListView = this._groupContent.findViewByType(PanelSpecTypes.MESSAGE_LIST);;
                 e.stopPropagation();
-                console.log("idea::onTitleClick with groupcontent",this._groupContent.cid);
-                if (Ctx.getCurrentInterfaceType() === Ctx.InterfaceTypes.SIMPLE) {
-                    messageListView = this._groupContent.findViewByType(PanelSpecTypes.MESSAGE_LIST);
+                //console.log("idea::onTitleClick with groupcontent",this._groupContent.cid);
+                if (Ctx.getCurrentInterfaceType() === Ctx.InterfaceTypes.SIMPLE && messageListView) {
                     messageListView.triggerMethod('messageList:clearAllFilters');
+                }
+                else {
+                  //messageListView.triggerMethod('messageList:clearAllFilters');
                 }
                 if (this.model === this._groupContent.getCurrentIdea()) {
                     // We want to avoid the "All messages" state,
@@ -182,6 +187,7 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                     //this._groupContent.setCurrentIdea(null);
                     //This is so the messageList refreshes.
                 } else {
+                  Assembl.vent.trigger('messageList:addFilterIsRelatedToIdea', this.model, null);
                   this._groupContent.setCurrentIdea(this.model);
                 }
                 this._groupContent.resetDebateState(false);
@@ -196,6 +202,7 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
 
                 Assembl.vent.trigger('messageList:addFilterIsRelatedToIdea', this.model, true);
                 this._groupContent.setCurrentIdea(this.model);
+                this._groupContent.resetDebateState(false);
             },
 
             /**
@@ -226,7 +233,8 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                     Assembl.vent.trigger('idea:dragEnd', this.model);
                 }
                 ev.currentTarget.style.opacity = '';
-                Ctx.draggedSegment = null;
+                Ctx.setDraggedAnnotation(null);
+                Ctx.setDraggedSegment(null);
                 Ctx.draggedIdea = null;
             },
 
@@ -258,7 +266,7 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                         return;
                     }
 
-                    // If it is a descendent, do nothing
+                    // If it is a descendant, do nothing
                     if (this.model.isDescendantOf(Ctx.draggedIdea)) {
                         ev.dataTransfer.dropEffect = 'none';
                         return;
@@ -274,14 +282,14 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                     }
                 }
 
-                if (Ctx.draggedSegment !== null || Ctx.getDraggedAnnotation() !== null) {
+                if (Ctx.getDraggedSegment() !== null || Ctx.getDraggedAnnotation() !== null) {
                     if (ev.target.classList.contains('idealist-dropzone')) {
                         this.$el.addClass('is-dragover-below');
                     } else {
                         this.$el.addClass('is-dragover');
                     }
                 }
-
+                //We should user a _.debounce instead for performance reasons benoitg 2014-04-13
                 this.dragOverCounter += 1;
             },
 
@@ -323,7 +331,7 @@ define(['backbone', 'underscore', 'app', 'common/context', 'utils/permissions', 
                         // Add to the current idea
                         this.model.addSegment(segment);
                     }
-
+                    Ctx.setDraggedSegment(null);
                     return;
                 }
 

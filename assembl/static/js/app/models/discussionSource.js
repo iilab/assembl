@@ -1,10 +1,9 @@
 'use strict';
 
-define(['models/base', 'common/context'], function (Base, Ctx) {
+define(['models/base', 'common/context', 'jquery'], function (Base, Ctx, $) {
 
     var sourceModel = Base.Model.extend({
         urlRoot: Ctx.getApiV2DiscussionUrl()+'sources',
-        idAttribute: '@id',
         defaults: {
             'name': '',
             'admin_sender': '',
@@ -16,6 +15,20 @@ define(['models/base', 'common/context'], function (Base, Ctx) {
             'folder': '',
             'use_ssl': false,
             'port': 0
+        },
+        validate: function(attrs, options){
+            /**
+             * check typeof variable
+             * */
+
+        },
+        doReimport: function() {
+            var url = this.url() + '/fetch_posts';
+            return $.post(url, {reimport: true});
+        },
+        doReprocess: function() {
+            var url = this.url() + '/fetch_posts';
+            return $.post(url, {reprocess: true});
         }
 
     });

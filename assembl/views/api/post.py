@@ -10,7 +10,7 @@ from pyramid.security import authenticated_userid
 
 from sqlalchemy import String, text
 
-from sqlalchemy.orm import (joinedload_all, undefer)
+from sqlalchemy.orm import joinedload_all, aliased
 from sqlalchemy.sql.expression import bindparam, and_
 from sqlalchemy.sql import cast, column
 
@@ -22,7 +22,7 @@ from assembl.auth.util import get_permissions
 from assembl.models import (
     get_database_id, Post, AssemblPost, SynthesisPost,
     Synthesis, Discussion, Content, Idea, ViewPost, User, Action,
-    IdeaRelatedPostLink, Email)
+    IdeaRelatedPostLink, Email, AgentProfile)
 import uuid
 from assembl.lib import config
 from jwzthreading import restrip_pat
@@ -78,11 +78,15 @@ def get_posts(request):
     except (ValueError, KeyError):
         page = 1
 
+    text_search = request.GET.get('text_search', None)
+
     order = request.GET.get('order')
     if order == None:
         order = 'chronological'
-    assert order in ('chronological', 'reverse_chronological')
-        
+    assert order in ('chronological', 'reverse_chronological', 'score')
+    if order == 'score':
+        assert text_search is not None
+
     if page < 1:
         page = 1
 
@@ -102,8 +106,25 @@ def get_posts(request):
     
 
     only_synthesis = request.GET.get('only_synthesis')
+    
+    post_author_id = request.GET.get('post_author')
+    if post_author_id:
+        post_author_id = get_database_id("AgentProfile", post_author_id)
+        assert AgentProfile.get(post_author_id), "Unable to find agent profile with id " + post_author_id
+
+    post_replies_to = request.GET.get('post_replies_to')
+    if post_replies_to:
+        post_replies_to = get_database_id("AgentProfile", post_replies_to)
+        assert AgentProfile.get(post_replies_to), "Unable to find agent profile with id " + post_replies_to
+
+    posted_after_date = request.GET.get('posted_after_date')
+
     PostClass = SynthesisPost if only_synthesis == "true" else Post
-    posts = Post.db.query(PostClass)
+    posts = discussion.db.query(PostClass)
+    if order == 'score':
+        posts = discussion.db.query(PostClass, Content.body_text_index.score_name)
+    else:
+        posts = discussion.db.query(PostClass)
 
     posts = posts.filter(
         PostClass.discussion_id == discussion_id,
@@ -149,6 +170,25 @@ def get_posts(request):
     if ids:
         posts = posts.filter(Post.id.in_(ids))
 
+    if posted_after_date:
+        import iso8601
+        try:
+            posted_after_date = iso8601.parse_date(posted_after_date)
+        except iso8601.ParseError as e:
+            posted_after_date = None
+            raise e 
+        if posted_after_date:
+            posts = posts.filter(PostClass.creation_date >= posted_after_date)
+        #Maybe we should do something if the date is invalid.  benoitg
+    
+    if post_author_id:
+        posts = posts.filter(PostClass.creator_id == post_author_id)
+    
+    if post_replies_to:
+        parent_alias = aliased(PostClass)
+        posts = posts.join(parent_alias, PostClass.parent)
+        posts = posts.filter(parent_alias.creator_id == post_replies_to)
+        
     # Post read/unread management
     is_unread = request.GET.get('is_unread')
     if user_id:
@@ -166,31 +206,48 @@ def get_posts(request):
         if is_unread == "false":
             raise HTTPBadRequest(localizer.translate(
                 _("You must be logged in to view which posts are read")))
-        
+
+    if text_search is not None:
+        # another Virtuoso bug: offband kills score. but it helps speed.
+        offband = () if (order == 'score') else None
+        posts = posts.filter(Post.body_text_index.contains(
+            text_search.encode('utf-8'), offband=offband))
+
     #posts = posts.options(contains_eager(Post.source))
     # Horrible hack... But useful for structure load
-    if view_def == 'partial':
+    if view_def == 'id_only':
         pass  # posts = posts.options(defer(Post.body))
     else:
-        posts = posts.options(joinedload_all(Post.creator), undefer(Email.recipients))
+        posts = posts.options(joinedload_all(Post.creator))
+        posts = posts.options(joinedload_all(Post.extracts))
+        posts = posts.options(joinedload_all(Post.widget_idea_links))
+        posts = posts.options(joinedload_all(SynthesisPost.publishes_synthesis))
 
     if order == 'chronological':
         posts = posts.order_by(Content.creation_date)
     elif order == 'reverse_chronological':
         posts = posts.order_by(Content.creation_date.desc())
+    elif order == 'score':
+        posts = posts.order_by(Content.body_text_index.score_name.desc())
+    print str(posts)
 
     no_of_posts = 0
     no_of_posts_viewed_by_user = 0
     
 
     for query_result in posts:
+        score, viewpost = None, None
+        if not isinstance(query_result, (list, tuple)):
+            query_result = [query_result]
+        post = query_result[0]
         if user_id:
-            post, viewpost = query_result
-        else:
-            post, viewpost = query_result, None
+            viewpost = query_result[-1]
         no_of_posts += 1
         serializable_post = post.generic_json(
             view_def, user_id, permissions) or {}
+        if order == 'score':
+            score = query_result[1]
+            serializable_post['score'] = score
 
         if viewpost:
             serializable_post['read'] = True
@@ -201,7 +258,7 @@ def get_posts(request):
                 actor_id=user_id,
                 post=root_post
                 )
-            Post.db.add(viewed_post)
+            discussion.db.add(viewed_post)
             serializable_post['read'] = True
         else:
             serializable_post['read'] = False
@@ -214,7 +271,7 @@ def get_posts(request):
     # This code isn't up to date.  If limiting the query by page, we need to 
     # calculate the counts with a separate query to have the right number of 
     # results
-    #no_of_messages_viewed_by_user = Post.db.query(ViewPost).join(
+    #no_of_messages_viewed_by_user = discussion.db.query(ViewPost).join(
     #    Post
     #).filter(
     #    Post.discussion_id == discussion_id,
@@ -266,7 +323,7 @@ def mark_post_read(request):
     if not user_id:
         raise HTTPUnauthorized()
     read_data = json.loads(request.body)
-    db = Discussion.db()
+    db = discussion.db
     change = False
     with transaction.manager:
         if read_data.get('read', None) is False:
@@ -302,7 +359,7 @@ def create_post(request):
     localizer = request.localizer
     request_body = json.loads(request.body)
     user_id = authenticated_userid(request)
-    user = Post.db.query(User).filter_by(id=user_id).one()
+    user = Post.default_db.query(User).filter_by(id=user_id).one()
 
     message = request_body.get('message', None)
     html = request_body.get('html', None)
@@ -341,7 +398,7 @@ def create_post(request):
     else:
         #print(in_reply_to_post.subject, discussion.topic)
         if in_reply_to_post:
-            subject = in_reply_to_post.subject if in_reply_to_post.subject else ''
+            subject = in_reply_to_post.get_title() if in_reply_to_post.get_title() else ''
         elif in_reply_to_idea:
             #TODO:  THis should use a cascade like the frontend   
             subject = in_reply_to_idea.short_title if in_reply_to_idea.short_title else ''
@@ -365,8 +422,8 @@ def create_post(request):
     else:
         new_post = AssemblPost(**post_constructor_args)
 
-    new_post.db.add(new_post)
-    new_post.db.flush()
+    discussion.db.add(new_post)
+    discussion.db.flush()
 
     if in_reply_to_post:
         new_post.set_parent(in_reply_to_post)
@@ -376,7 +433,7 @@ def create_post(request):
             content=new_post,
             idea=in_reply_to_idea
         )
-        IdeaRelatedPostLink.db.add(idea_post_link)
+        discussion.db.add(idea_post_link)
     for source in discussion.sources:
         source.send_post(new_post)
     permissions = get_permissions(user_id, discussion_id)

@@ -40,8 +40,8 @@ define(['underscore', 'models/base', 'common/context', 'models/agents', 'models/
                 var that = this;
 
                 this.listenTo(this, "change:idIdea", function () {
-                    that.collection.collectionManager.getAllIdeasCollectionPromise().done(
-                        function (allIdeasCollection) {
+                    that.collection.collectionManager.getAllIdeasCollectionPromise()
+                        .done(function (allIdeasCollection) {
                             var previousIdea,
                                 idea;
 
@@ -120,9 +120,24 @@ define(['underscore', 'models/base', 'common/context', 'models/agents', 'models/
             /** Return a promise for the Post the segments is associated to, if any
              * @return {$.Defered.Promise}
              */
+            getAssociatedIdeaPromise: function () {
+              var that = this,
+                  idIdea = this.get('idIdea');
+              if(idIdea) {
+                return this.collection.collectionManager.getAllIdeasCollectionPromise().then(function(allIdeasCollection) {
+                  return allIdeasCollection.get(idIdea);
+                });
+              }
+              else {
+                return Promise.resolve(null);
+              }
+
+            },
+
+            /** Return a promise for the Post the segments is associated to, if any
+             * @return {$.Defered.Promise}
+             */
             getAssociatedPostPromise: function () {
-                var that = this,
-                    deferred = $.Deferred();
                 return this.collection.collectionManager.getMessageFullModelPromise(this.get('idPost'));
             },
 
@@ -168,6 +183,9 @@ define(['underscore', 'models/base', 'common/context', 'models/agents', 'models/
             getCreatorFromUsersCollection: function (usersCollection) {
                 var creatorId = this.get('idCreator'),
                     creator = usersCollection.getById(creatorId);
+                if(!creatorId) {
+                  throw new Error("A segment cannot have an empty creator");
+                }
                 return creator;
             },
 
@@ -228,7 +246,7 @@ define(['underscore', 'models/base', 'common/context', 'models/agents', 'models/
             addAnnotationAsExtract: function (annotation, idIdea) {
                 var that = this,
                     idPost = Ctx.getPostIdFromAnnotation(annotation);
-                console.log("addAnnotationAsExtract called");
+                //console.log("addAnnotationAsExtract called");
 
                 var segment = new SegmentModel({
                     target: { "@id": idPost, "@type": Types.EMAIL },

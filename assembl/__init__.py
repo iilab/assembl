@@ -11,8 +11,8 @@ from pyramid_beaker import session_factory_from_settings
 from pyramid.i18n import default_locale_negotiator
 from zope.component import getGlobalSiteManager
 
-from .lib.sqla import configure_engine
-
+from .lib.sqla import configure_engine, session_maker_is_initialized
+from .lib.locale import to_posix_format, ensure_locale_has_country
 
 # Do not import models here, it will break tests.
 
@@ -27,7 +27,11 @@ def main(global_config, **settings):
 
     # here we create the engine and bind it to the (not really a) session
     # factory
-    configure_engine(settings)
+    if not session_maker_is_initialized():
+        configure_engine(settings)
+    if settings.get('assembl_debug_signal', False):
+        from assembl.lib import signals
+        signals.listen()
 
     from views.traversal import root_factory
     config = Configurator(registry=getGlobalSiteManager())
@@ -35,12 +39,15 @@ def main(global_config, **settings):
     config.add_translation_dirs('assembl:locale/')
 
     def my_locale_negotiator(request):
-        locale = default_locale_negotiator(request)
+        locale = to_posix_format(default_locale_negotiator(request))
         available = settings['available_languages'].split()
-        locale = locale if locale in available else None
+        if locale and locale not in available:
+            locale_with_country = ensure_locale_has_country(locale)
+            if locale_with_country:
+                locale = locale_with_country
         if not locale:
-            locale = request.accept_language.best_match(
-                available, settings.get('pyramid.default_locale_name', 'en'))
+            locale = to_posix_format(request.accept_language.best_match(
+                available, settings.get('pyramid.default_locale_name', 'en')))
         request._LOCALE_ = locale
         return locale
 

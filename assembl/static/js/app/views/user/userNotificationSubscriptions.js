@@ -1,7 +1,7 @@
 'use strict';
 
-define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionManager', 'common/context', 'models/notificationSubscription', 'models/roles', 'utils/i18n', 'utils/roles', 'models/emailAccounts'],
-    function (Marionette, Assembl, $, _, CollectionManager, Ctx, NotificationSubscription, RolesModel, i18n, Roles, emailAccounts) {
+define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionManager', 'common/context', 'models/notificationSubscription', 'models/roles', 'utils/i18n', 'utils/roles', 'models/emailAccounts', 'bluebird'],
+    function (Marionette, Assembl, $, _, CollectionManager, Ctx, NotificationSubscription, RolesModel, i18n, Roles, emailAccounts, Promise) {
 
         /**
          * User notification
@@ -11,12 +11,18 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
             tagName:'label',
             className:'checkbox dispb',
             initialize: function(options){
+              this.role = options.role;
+              this.roles = options.roles;
+
+              this.listenTo(this.roles, 'remove add', function(model){
+                this.role = (_.size(this.roles)) ? model : undefined;
+                this.render();
+              });
 
               if(this.model === 'undefined'){
                 this.template = "#tmpl-loader";
               }
 
-              this.role = options.role;
             },
             ui: {
               currentSubscribeCheckbox: ".js_userNotification"
@@ -36,6 +42,7 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
                 var status = elm.is(':checked') ? 'ACTIVE' : 'UNSUBSCRIBED';
 
                 this.model.set("status", status);
+                this.model.set("creation_origin", "USER_REQUESTED");
                 this.model.save(null, {
                     success: function (model, resp) {
                     },
@@ -51,7 +58,8 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
             initialize: function(options){
                this.collection = options.notificationsUser;
                this.childViewOptions = {
-                 role: options.role
+                 role: options.role,
+                 roles: options.roles
                }
             },
             collectionEvents: {
@@ -67,9 +75,16 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
             tagName:'label',
             className:'checkbox dispb',
             initialize: function(options){
-              this.roles = options.roles
+              this.role = options.role;
+              this.roles = options.roles;
               this.notificationsUser = options.notificationsUser;
               this.notificationTemplates = options.notificationTemplates;
+
+              this.listenTo(this.roles, 'remove add', function(model){
+                this.role = (_.size(this.roles)) ? model : undefined;
+                this.render();
+              });
+
             },
             ui: {
               newSubscribeCheckbox: ".js_userNewNotification"
@@ -80,7 +95,7 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
             serializeData: function () {
               return {
                 subscription: this.model,
-                roles: this.roles,
+                role: this.role,
                 i18n: i18n
               }
             },
@@ -134,10 +149,10 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
                 });
 
                 this.collection = addableGlobalSubscriptions;
-                //that._initialEvents();
 
                 this.childViewOptions = {
-                    roles: options.role,
+                    role: options.role,
+                    roles: options.roles,
                     notificationsUser: options.notificationsUser,
                     notificationTemplates: addableGlobalSubscriptions
                 }
@@ -157,10 +172,6 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
             className: 'radio',
             ui: {
               preferredEmail: '.js_preferred'
-            },
-            initialize: function(){
-
-
             },
             events: {
               'click @ui.preferredEmail': 'preferredEmail'
@@ -212,23 +223,28 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
                 'click @ui.unSubscription': 'unSubscription',
                 'click @ui.subscription': 'subscription'
             },
-            initialize: function(){
-                this.listenTo(this, 'subscriberView:render', this.render);
+            initialize: function(options){
+                this.roles = options.roles;
+                this.role = options.role;
+
+                this.listenTo(this.roles, 'remove add', function(model){
+                    this.role = (_.size(this.roles)) ? model : undefined;
+                    this.render();
+                });
             },
             serializeData: function(){
                 return {
-                    role: this.model
+                    role: this.role
                 }
             },
 
             unSubscription: function () {
                 var that = this;
 
-                if (this.model !== undefined) {
-                    this.model.destroy({
+                if (this.role) {
+                    this.role.destroy({
                         success: function (model, resp) {
-                            that.model = undefined;
-                            that.trigger('subscriberView:render');
+                            that.roles.remove(model);
                         },
                         error: function (model, resp) {
                             console.error('ERROR: unSubscription failed', resp);
@@ -249,13 +265,11 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
 
                     LocalRolesUser.save(null, {
                         success: function (model, resp) {
-                            that.model = LocalRolesUser;
-                            that.trigger('subscriberView:render');
+                            that.roles.add(model);
                         },
                         error: function (model, resp) {
                             console.error('ERROR: joinDiscussion->subscription', resp);
-                        }
-                    })
+                        }});
                 }
             }
 
@@ -270,50 +284,40 @@ define(['backbone.marionette','app', 'jquery', 'underscore', 'common/collectionM
               userSubscriber: '#subscriber',
               notifByEmail: '#notifByEmail'
             },
-            initialize: function(){
-                this.collectionManager = new CollectionManager();
-            },
             onBeforeShow: function () {
-                var that = this;
+                var that = this,
+                    collectionManager = new CollectionManager();
 
-                $.when(this.collectionManager.getNotificationsUserCollectionPromise(),
-                       this.collectionManager.getNotificationsDiscussionCollectionPromise(),
-                       this.collectionManager.getLocalRoleCollectionPromise()).then(
+                Promise.join(collectionManager.getNotificationsUserCollectionPromise(),
+                       collectionManager.getNotificationsDiscussionCollectionPromise(),
+                       collectionManager.getLocalRoleCollectionPromise(),
                     function (NotificationsUser, notificationTemplates, allRoles) {
 
                         var role =  allRoles.find(function (local_role) {
-                                return local_role.get('role') == Roles.PARTICIPANT;
+                                return local_role.get('role') === Roles.PARTICIPANT;
                             });
                         var subscriber = new Subscriber({
-                            model: role
+                            role: role,
+                            roles: allRoles
                         });
                         that.getRegion('userSubscriber').show(subscriber);
-
 
                         var templateSubscriptions = new TemplateSubscriptions({
                             notificationTemplates: notificationTemplates,
                             notificationsUser: NotificationsUser,
-                            role: role
+                            role: role,
+                            roles: allRoles
                         });
                         that.getRegion('templateSubscription').show(templateSubscriptions);
 
                         var userNotification = new Notifications({
                             notificationsUser: NotificationsUser,
-                            role: role
+                            role: role,
+                            roles: allRoles
                         });
                         that.getRegion('userNotifications').show(userNotification);
 
                     });
-
-
-
-
-
-
-
-               /*var templateSubscriptions = new TemplateSubscriptions();
-               this.templateSubscription.show(templateSubscriptions);*/
-
 
                var emailAccount = new emailAccounts.Collection();
                var notificationByEmails = new NotificationByEmails({

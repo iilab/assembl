@@ -5,7 +5,11 @@
         <div id="playlist">
             <p id="current">{{ youtube.videoTitle }}</p>
 
-            <div class="card-comment">
+            <p ng-show="!canPost && canNotPostReason == 'no_endpoint'">
+                {{ 'canNotPostBecauseNoEndpoint' | translate }}
+            </p>
+
+            <div class="card-comment" ng-show="canPost">
                 
                 <div ng-hide="message_is_sent">
                     <p>
@@ -42,27 +46,42 @@
             {{ 'videoTopExplanation' | translate: {idea: idea.shortTitle, discussion: discussion.topic} }}
         </p>
 
+        <p ng-show="!canPost && canNotPostReason == 'no_endpoint'">
+            {{ 'canNotPostBecauseNoEndpoint' | translate }}
+        </p>
+
         <ul class="keywords">
             <li class="keyword" ng-repeat="keyword in inspiration_keywords" ng-click="keywordClick($event)"
                 ng-show="inspiration_keywords_used[keyword] != true">{{keyword}}
             </li>
         </ul>
-        <!--
-        <p>
-          {{ 'videoTopExplanationSecondRowKeywords' | translate }}
-        </p>
-
-        <ul class="keywords">
-          <li class="keyword" ng-repeat="keyword in inspiration_keywords_related" ng-click="keywordClick($event)" ng-show="inspiration_keywords_used[keyword] != true">{{keyword}}</li>
-        </ul>
-        -->
 
         <form id="search" data-ng-submit="search()">
             <input ng-model="query" id="query" class="select2-offscreen" type="hidden" value=""
-                   placeholder="Entrez ici votre recherche..."/>
+                   placeholder="{{ 'videoSearchPlaceholderText' | translate }}"/>
             <input type="submit" id="search-button" value="{{ 'videoSearch' | translate }}" class="btn btn-default"/>
         </form>
 
+        <!-- -->
+        <fieldset>
+            <legend>{{ 'videoTopExplanationRelatedTermsTitle' | translate }}</legend>
+            <p>
+              {{ 'videoTopExplanationRelatedTermsDescription' | translate }}
+            </p>
+
+            <form id="searchRelatedTerms" data-ng-submit="searchRelatedTerms()">
+                <input ng-model="related_terms_query" id="related_terms_query" 
+                       placeholder="{{ 'videoSearchPlaceholderText' | translate }}"/>
+                <input type="submit" id="search-button" value="{{ 'videoSearch' | translate }}" class="btn btn-default"/>
+            </form>
+
+            <ul class="keywords" ng-show="inspiration_keywords_related.length">
+              <li class="keyword" ng-repeat="keyword in inspiration_keywords_related" ng-click="keywordClick($event)" ng-show="inspiration_keywords_used[keyword] != true">{{keyword}}</li>
+            </ul>
+            <p ng-show="inspiration_keywords_related_no_results">{{ 'videoNoRelatedTermsSearchResults' | translate: {query: query} }}
+        </fieldset>
+        <!-- -->
+        
         <p ng-show="hasSearched && !results.length">{{ 'videoNoSearchResults' | translate: {query: query} }}</p>
 
         <div class="video" data-ng-repeat="video in results"

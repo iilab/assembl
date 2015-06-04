@@ -1,6 +1,6 @@
 'use strict';
 
-define(['backbone', 'common/context'], function (Backbone, Ctx) {
+define(['backbone', 'bluebird', 'common/context', 'utils/types'], function (Backbone, Promise, Ctx, Types) {
 
     /**
      * @class Model
@@ -29,6 +29,17 @@ define(['backbone', 'common/context'], function (Backbone, Ctx) {
                 return this.id;
             }
         },
+
+        getCssClassFromId: function() {
+            var re = /^(\w+):(\w+)\/(\d+)$/;
+            if (re.test(this.id)) {
+                return this.id.replace(re,"$1-$2-$3");
+            }
+            else {
+                return this.id;
+            }
+        },
+
         /**
          * Get the innerText from the given `id` element
          * Parses the json and execute `.reset` method in the Model
@@ -36,22 +47,17 @@ define(['backbone', 'common/context'], function (Backbone, Ctx) {
          * @param {String} id The script tag id
          */
         fetchFromScriptTag: function (id) {
-            var that = this,
-                script = document.getElementById(id),
-                json;
-
-            if (!script) {
-                console.login(Ctx.format("Script tag #{0} doesn't exist", id));
-                return {};
-            }
-
+            var json = null;
             try {
-                json = JSON.parse(script.textContent);
+                json = Ctx.getJsonFromScriptTag(id);
             } catch (e) {
-                console.log(script.textContent);
                 throw new Error("Invalid json. " + e.message);
             }
             this.set(json);
+        },
+
+        toScriptTag: function (id) {
+            Ctx.writeJsonToScriptTag(this.toJSON(), id);
         },
 
         url: function () {
@@ -77,6 +83,17 @@ define(['backbone', 'common/context'], function (Backbone, Ctx) {
             return this.get('@id') || this.get('id') || this.cid;
         },
 
+        getBEType: function() {
+            return this.get('@type');
+        },
+
+        getBaseType: function() {
+            return Types.getBaseType(this.getBEType());
+        },
+
+        isInstance: function(type) {
+            return Types.isInstance(this.getBEType(), type);
+        },
 
         /**
          * Overwritting backbone's parse function
@@ -141,26 +158,23 @@ define(['backbone', 'common/context'], function (Backbone, Ctx) {
          * @param {String} id The script tag id
          */
         fetchFromScriptTag: function (id) {
-            var that = this,
-                script = document.getElementById(id),
-                json,
-                deferred = $.Deferred();
-            setTimeout(function () {
-                if (!script) {
-                    console.log(Ctx.format("Script tag #{0} doesn't exist", id));
-                    return deferred.reject();
-                }
+          var that = this;
 
-                try {
-                    json = JSON.parse(script.textContent);
-                } catch (e) {
-                    throw new Error("Invalid json. " + e.message);
-                    deferred.reject();
-                }
-                that.reset(json);
-                deferred.resolve(that);
-            }, 1);
-            return deferred.promise();
+          return Promise.delay(1).then(function () {
+            var script = document.getElementById(id),
+            json;
+            if (!script) {
+              throw new Error(Ctx.format("Script tag #{0} doesn't exist", id));
+            }
+
+            try {
+              json = JSON.parse(script.textContent);
+            } catch (e) {
+              throw new Error("Invalid json. " + e.message);
+            }
+            that.reset(json);
+            return that;
+          });
         },
 
         /**

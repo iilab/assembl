@@ -26,20 +26,15 @@ agent = Service(
     description="Retrieve a single agent", renderer='json')
 
 
-def _get_agents_real(discussion, user_id=Everyone, view_def=None):
-    agents = AgentProfile.db().query(AgentProfile)
+def _get_agents_real(discussion, user_id=Everyone, view_def='default'):
+    agents = discussion.get_participants_query()
     permissions = get_permissions(user_id, discussion.id)
     include_emails = P_ADMIN_DISC in permissions or P_SYSADMIN in permissions
     if include_emails:
         agents = agents.options(joinedload(AgentProfile.accounts))
-    # TODO: Only those in the discussion...
-    # look at permissions, posts, extracts... argh!
 
     def view(agent):
-        if view_def:
-            result = agent.generic_json(view_def, user_id, permissions)
-        else:
-            result = agent.serializable()
+        result = agent.generic_json(view_def, user_id, permissions)
         if result is None:
             return
         if include_emails or agent.id == user_id:
@@ -89,7 +84,7 @@ def post_agent(request):
         raise HTTPUnauthorized()
     redirect = False
     username = request.params.get('username', '').strip()
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     localizer = request.localizer
     errors = []
 

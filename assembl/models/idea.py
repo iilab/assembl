@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.associationproxy import association_proxy
 from virtuoso.vmapping import IriClass
-from virtuoso.alchemy import SparqlClause
+from virtuoso.alchemy import SparqlClause, Timestamp
 
 from ..lib import config
 from ..nlp.wordcounter import WordCounter
@@ -52,7 +52,7 @@ class IdeaVisitor(object):
     __metaclass__ = ABCMeta
 
     @abstractmethod
-    def visit_idea(self, idea):
+    def visit_idea(self, idea, level, prev_result):
         pass
 
 
@@ -65,6 +65,20 @@ class IdeaLinkVisitor(object):
         pass
 
 
+class GraphViewIdeaVisitor(IdeaVisitor):
+    def __init__(self, graph_view):
+        self.graph_view = graph_view
+
+    def visit_idea(self, idea, level, prev_result):
+        # not the most efficient, but everything was prefetched
+        if idea in self.graph_view.get_ideas():
+            return self.do_visit_idea(idea, level, prev_result)
+
+    @abstractmethod
+    def do_visit_idea(self, idea, level, prev_result):
+        pass
+
+
 class WordCountVisitor(IdeaVisitor):
     def __init__(self, langs):
         self.counter = WordCounter(langs)
@@ -72,7 +86,7 @@ class WordCountVisitor(IdeaVisitor):
     def cleantext(self, text):
         return BeautifulSoup(text).get_text().strip()
 
-    def visit_idea(self, idea):
+    def visit_idea(self, idea, level, prev_result):
         if idea.short_title:
             self.counter.add_text(self.cleantext(idea.short_title))
         if idea.long_title:
@@ -91,6 +105,8 @@ class Idea(Tombstonable, DiscussionBoundBase):
     __tablename__ = "idea"
     ORPHAN_POSTS_IDEA_ID = 'orphan_posts'
     sqla_type = Column(String(60), nullable=False)
+    rdf_type = Column(
+        String(60), nullable=False, server_default='idea:GenericIdeaNode')
 
     long_title = Column(
         UnicodeText,
@@ -102,6 +118,7 @@ class Idea(Tombstonable, DiscussionBoundBase):
         UnicodeText,
         info={'rdf': QuadMapPatternS(None, DCTERMS.description)})
     hidden = Column(Boolean, server_default='0')
+    last_modified = Column(Timestamp)
 
     id = Column(
         Integer, primary_key=True,
@@ -130,7 +147,7 @@ class Idea(Tombstonable, DiscussionBoundBase):
     #widget = relationship("Widget", backref=backref('ideas', order_by=creation_date))
 
     __mapper_args__ = {
-        'polymorphic_identity': 'idea:GenericIdeaNode',
+        'polymorphic_identity': 'idea',
         'polymorphic_on': sqla_type,
         # Not worth it for now, as the only other class is RootIdea, and there
         # is only one per discussion - benoitg 2013-12-23
@@ -140,11 +157,15 @@ class Idea(Tombstonable, DiscussionBoundBase):
     @classmethod
     def special_quad_patterns(cls, alias_maker, discussion_id):
         return [QuadMapPatternS(
-            None, RDF.type, IriClass(VirtRDF.QNAME_ID).apply(Idea.sqla_type),
+            None, RDF.type, IriClass(VirtRDF.QNAME_ID).apply(Idea.rdf_type),
             name=QUADNAMES.class_Idea_class)]
 
     parents = association_proxy(
         'source_links', 'source',
+        creator=lambda idea: IdeaLink(source=idea))
+
+    parents_ts = association_proxy(
+        'source_links_ts', 'source_ts',
         creator=lambda idea: IdeaLink(source=idea))
 
     children = association_proxy(
@@ -179,7 +200,7 @@ class Idea(Tombstonable, DiscussionBoundBase):
                   JOIN idea AS dag_idea ON (ia.source_id = dag_idea.id)
                   WHERE dag_idea.discussion_id = :discussion_id
                   AND ia.target_id=:idea_id) x on (id=source_id)'''
-        ancestors = self.db().query(Idea).from_statement(text(sql).bindparams(
+        ancestors = self.db.query(Idea).from_statement(text(sql).bindparams(
             discussion_id=self.discussion_id, idea_id=self.id))
 
         return ancestors.all()
@@ -187,10 +208,18 @@ class Idea(Tombstonable, DiscussionBoundBase):
     def get_order_from_first_parent(self):
         return self.source_links[0].order if self.source_links else None
 
+    def get_order_from_first_parent_ts(self):
+        return self.source_links_ts[0].order if self.source_links_ts else None
+
     def get_first_parent_uri(self):
         return Idea.uri_generic(
             self.source_links[0].source_id
         ) if self.source_links else None
+
+    def get_first_parent_uri_ts(self):
+        return Idea.uri_generic(
+            self.source_links_ts[0].source_id
+        ) if self.source_links_ts else None
 
     @staticmethod
     def _get_idea_dag_statement(skip_where=False):
@@ -279,7 +308,7 @@ JOIN post AS family_posts ON (
     @property
     def num_read_posts(self):
         """ Worse than above... but temporary """
-        connection = self.db().connection()
+        connection = self.db.connection()
         user_id = connection.info.get('userid', None)
         return self.num_read_posts_for(user_id)
 
@@ -302,42 +331,47 @@ JOIN post AS family_posts ON (
 
     def visit_ideas_depth_first(self, idea_visitor):
         self.prefetch_descendants()
-        self._visit_ideas_depth_first(idea_visitor, set())
+        self._visit_ideas_depth_first(idea_visitor, set(), 0, None)
 
-    def _visit_ideas_depth_first(self, idea_visitor, visited):
+    def _visit_ideas_depth_first(
+            self, idea_visitor, visited, level, prev_result):
         if self in visited:
             # not necessary in a tree, but let's start to think graph.
             return False
-        result = idea_visitor.visit_idea(self)
+        result = idea_visitor.visit_idea(self, level, prev_result)
         visited.add(self)
         if result is not IdeaVisitor.CUT_VISIT:
             for child in self.children:
-                child._visit_ideas_depth_first(idea_visitor, visited)
+                child._visit_ideas_depth_first(
+                    idea_visitor, visited, level+1, result)
 
     def visit_ideas_breadth_first(self, idea_visitor):
         self.prefetch_descendants()
-        result = idea_visitor.visit_idea(self)
+        result = idea_visitor.visit_idea(self, 0, None)
         visited = {self}
         if result is not IdeaVisitor.CUT_VISIT:
-            self._visit_ideas_breadth_first(idea_visitor, visited)
+            self._visit_ideas_breadth_first(idea_visitor, visited, 1, result)
 
-    def _visit_ideas_breadth_first(self, idea_visitor, visited):
+    def _visit_ideas_breadth_first(
+            self, idea_visitor, visited, level, prev_result):
         children = []
+        result = True
         for child in self.children:
             if child in visited:
                 continue
-            result = idea_visitor.visit_idea(child)
+            result = idea_visitor.visit_idea(child, level, prev_result)
             visited.add(child)
             if result != IdeaVisitor.CUT_VISIT:
                 children.append(child)
         for child in children:
-            child._visit_ideas_breadth_first(idea_visitor, visited)
+            child._visit_ideas_breadth_first(
+                idea_visitor, visited, level+1, result)
 
     def most_common_words(self, lang=None, num=8):
         if lang:
             langs = (lang,)
         else:
-            langs = self.discussion.get_discussion_locales()
+            langs = self.discussion.discussion_locales
         word_counter = WordCountVisitor(langs)
         self.visit_ideas_depth_first(word_counter)
         return word_counter.best(num)
@@ -433,11 +467,34 @@ JOIN post AS family_posts ON (
         if id_only:
             return [AgentProfile.uri_generic(id) for id in author_ids]
         else:
-            return AgentProfile.db.query(AgentProfile).filter(
+            return self.db.query(AgentProfile).filter(
                 AgentProfile.id.in_(author_ids)).all()
 
     def get_discussion_id(self):
         return self.discussion_id
+
+    def get_definition_preview(self):
+        body = self.definition.strip()
+        target_len = 120
+        shortened = False
+        html_len = 2 * target_len
+        while True:
+            text = BeautifulSoup(body[:html_len]).get_text().strip()
+            if html_len >= len(body) or len(text) > target_len:
+                shortened = html_len < len(body)
+                body = text
+                break
+            html_len += target_len
+        if len(body) > target_len:
+            body = body[:target_len].rsplit(' ', 1)[0].rstrip() + ' '
+        elif shortened:
+            body += ' '
+        return body
+
+    def get_url(self):
+        from assembl.lib.frontend_urls import FrontendUrls
+        frontendUrls = FrontendUrls(self.discussion)
+        return frontendUrls.get_idea_url(self)
 
     @classmethod
     def get_discussion_conditions(cls, discussion_id, alias_maker=None):
@@ -466,7 +523,7 @@ JOIN post AS family_posts ON (
             next_synthesis.send_to_changes()
 
     def send_to_changes(self, connection=None, operation=UPDATE_OP):
-        connection = connection or self.db().connection()
+        connection = connection or self.db.connection()
         if self.is_tombstone:
             self.tombstone().send_to_changes(connection)
         else:
@@ -500,7 +557,7 @@ JOIN post AS family_posts ON (
 
         post_uri = URIRef(Content.uri_generic(
             post_id, AssemblQuadStorageManager.local_uri()))
-        return [int(id) for (id,) in cls.db.execute(SparqlClause(
+        return [int(id) for (id,) in cls.default_db.execute(SparqlClause(
             '''select distinct ?idea where {
                 %s sioc:reply_of* ?post .
                 ?fragment oa:hasSource ?post .
@@ -521,7 +578,7 @@ JOIN post AS family_posts ON (
         user_uri = URIRef(AgentProfile.uri_generic(user_id, local_uri)).n3()
         results = []
         for idea_id in idea_ids:
-            ((read,),) = list(cls.db.execute(SparqlClause(
+            ((read,),) = list(cls.default_db.execute(SparqlClause(
             """select count(distinct ?change) where {
             %s idea:includes* ?ideaF .
             ?fragment assembl:resourceExpressesIdea ?ideaF .
@@ -540,7 +597,7 @@ JOIN post AS family_posts ON (
         """Given a post and a user, give the total and read count
             of posts for each affected idea"""
         idea_ids = cls.get_idea_ids_showing_post(post_id)
-        ideas = cls.db.query(cls).filter(cls.id.in_(idea_ids))
+        ideas = cls.default_db.query(cls).filter(cls.id.in_(idea_ids))
         return [(idea.id, idea.num_read_posts_for(user_id))
                 for idea in ideas]
 
@@ -561,7 +618,7 @@ JOIN post AS family_posts ON (
     def get_all_idea_links(cls, discussion_id):
         target = aliased(cls)
         source = aliased(cls)
-        return cls.db().query(
+        return cls.default_db.query(
             IdeaLink).join(
             source, source.id == IdeaLink.source_id).join(
             target, target.id == IdeaLink.target_id).filter(
@@ -600,7 +657,7 @@ JOIN post AS family_posts ON (
                             IdeaLink, kwargs)))
 
             def contains(self, parent_instance, instance):
-                return IdeaLink.db.query(
+                return instance.db.query(
                     IdeaLink).filter_by(
                     source=parent_instance, target=instance
                     ).count() > 0
@@ -649,7 +706,7 @@ JOIN post AS family_posts ON (
                 iwlink = aliased(IdeaWidgetLink)
                 ancestry = self.ancestry.bindparams(
                     idea_id=parent_instance.id).alias('ancestry')
-                query = Widget.db.query(Widget).join(iwlink).join(
+                query = instance.db.query(Widget).join(iwlink).join(
                     ancestors).filter(ancestors.id.in_(ancestry)).filter(
                     Widget.id == instance.id)
                 if self.widget_subclass is not None:
@@ -679,7 +736,7 @@ JOIN post AS family_posts ON (
                                 IdeaRelatedPostLink, kwargs)))
 
             def contains(self, parent_instance, instance):
-                return IdeaRelatedPostLink.db.query(
+                return instance.db.query(
                     IdeaRelatedPostLink).filter_by(
                     content=instance, idea=parent_instance
                     ).count() > 0
@@ -716,7 +773,7 @@ JOIN post AS family_posts ON (
                     instance.hidden = True
 
             def contains(self, parent_instance, instance):
-                return IdeaContentWidgetLink.db.query(
+                return instance.db.query(
                     IdeaContentWidgetLink).filter_by(
                     content=instance, idea=parent_instance
                     ).count() > 0
@@ -740,7 +797,7 @@ JOIN post AS family_posts ON (
                     widgets_coll = ctx.find_collection(
                         'CriterionCollection.criteria')
                     if isinstance(inst, AbstractIdeaVote):
-                        other_votes = cls.db.query(AbstractIdeaVote).filter_by(
+                        other_votes = instance.db.query(AbstractIdeaVote).filter_by(
                             voter_id=user_id, idea_id=inst.idea.id,
                             criterion_id=parent_instance.id, is_tombstone=False
                             ).options(joinedload(AbstractIdeaVote.idea)).all()
@@ -777,21 +834,13 @@ class RootIdea(Idea):
 
     If has implicit links to all content and posts in the discussion.
     """
-    __tablename__ = "root_idea"
-
-    id = Column(Integer, ForeignKey(
-        'idea.id',
-        ondelete='CASCADE',
-        onupdate='CASCADE'
-    ), primary_key=True)
-
     root_for_discussion = relationship(
         Discussion,
         backref=backref('root_idea', uselist=False),
     )
 
     __mapper_args__ = {
-        'polymorphic_identity': 'assembl:RootIdea',
+        'polymorphic_identity': 'root_idea',
     }
 
     @property
@@ -826,30 +875,6 @@ class RootIdea(Idea):
     crud_permissions = CrudPermissions(P_ADMIN_DISC)
 
 
-class Issue(Idea):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:Issue',
-    }
-
-
-class Position(Idea):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:Position',
-    }
-
-
-class Argument(Idea):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:Argument',
-    }
-
-
-class Criterion(Idea):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:Criterion',
-    }
-
-
 class IdeaLink(Tombstonable, DiscussionBoundBase):
     """
     A generic link between two ideas
@@ -862,8 +887,8 @@ class IdeaLink(Tombstonable, DiscussionBoundBase):
     id = Column(
         Integer, primary_key=True,
         info={'rdf': QuadMapPatternS(None, ASSEMBL.db_id)})
-    sqla_type = Column(String(60), nullable=False,
-                       default="idea:InclusionRelation")
+    rdf_type = Column(
+        String(60), nullable=False, server_default='idea:InclusionRelation')
     source_id = Column(
         Integer, ForeignKey(
             'idea.id', ondelete="CASCADE", onupdate="CASCADE"),
@@ -886,15 +911,17 @@ class IdeaLink(Tombstonable, DiscussionBoundBase):
                     "Idea.is_tombstone==False)",
         backref=backref('source_links', cascade="all, delete-orphan"),
         foreign_keys=(target_id))
+    source_ts = relationship(
+        'Idea',
+        backref=backref('target_links_ts', cascade="all, delete-orphan"),
+        foreign_keys=(source_id))
+    target_ts = relationship(
+        'Idea',
+        backref=backref('source_links_ts', cascade="all, delete-orphan"),
+        foreign_keys=(target_id))
     order = Column(
         Float, nullable=False, default=0.0,
         info={'rdf': QuadMapPatternS(None, ASSEMBL.link_order)})
-
-    __mapper_args__ = {
-        'polymorphic_identity': 'idea:InclusionRelation',
-        'polymorphic_on': sqla_type,
-        'with_polymorphic': '*'
-    }
 
     @classmethod
     def base_conditions(cls, alias=None, alias_maker=None):
@@ -940,7 +967,10 @@ class IdeaLink(Tombstonable, DiscussionBoundBase):
                 IDEA.target_idea,
                 Idea.iri_class().apply(idea_link.source_id),
                 name=QUADNAMES.col_pattern_IdeaLink_source_id
-                )
+                ),
+            QuadMapPatternS(
+                None, RDF.type, IriClass(VirtRDF.QNAME_ID).apply(IdeaLink.rdf_type),
+                name=QUADNAMES.class_IdeaLink_class),
         ]
 
     def copy(self):
@@ -952,13 +982,13 @@ class IdeaLink(Tombstonable, DiscussionBoundBase):
         return retval
 
     def get_discussion_id(self):
-        if inspect(self).attrs.source.loaded_value != NO_VALUE:
-            return self.source.get_discussion_id()
+        if inspect(self).attrs.source_ts.loaded_value != NO_VALUE:
+            return self.source_ts.get_discussion_id()
         else:
-            return Idea.get(self.source_id).get_discussion_id()
+            return self.object_session.query(Idea).get(self.source_id).get_discussion_id()
 
     def send_to_changes(self, connection=None, operation=UPDATE_OP):
-        connection = connection or self.db().connection()
+        connection = connection or self.db.connection()
         if self.is_tombstone:
             self.tombstone().send_to_changes(connection)
         else:
@@ -982,33 +1012,3 @@ class IdeaLink(Tombstonable, DiscussionBoundBase):
         Discussion, viewonly=True, uselist=False,
         secondary=Idea.__table__, primaryjoin=(source_id == Idea.id),
         info={'rdf': QuadMapPatternS(None, ASSEMBL.in_conversation)})
-
-
-class PositionRespondsToIssue(IdeaLink):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:PositionRespondsToIssue',
-    }
-
-
-class ArgumentSupportsIdea(IdeaLink):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:ArgumentSupportsIdea',
-    }
-
-
-class ArgumentOpposesIdea(IdeaLink):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:ArgumentOpposesIdea',
-    }
-
-
-class IssueAppliesTo(IdeaLink):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:IssueAppliesTo',
-    }
-
-
-class IssueQuestions(IssueAppliesTo):
-    __mapper_args__ = {
-        'polymorphic_identity': 'ibis:IssueQuestions',
-    }

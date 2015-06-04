@@ -1,7 +1,7 @@
 'use strict';
 
-define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
-    function (_, $, Assembl, Ctx, Base) {
+define(['underscore', 'jquery', 'app', 'common/context', 'models/base', 'bluebird', 'utils/types'],
+    function (_, $, Assembl, Ctx, Base, Promise, Types) {
 
         /**
          * @class MessageModel
@@ -29,9 +29,23 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
                 avatarUrl: null,
                 date: null,
                 bodyMimeType: null,
-                publishes_synthesis_id: null
+                publishes_synthesis_id: null,
+                metadata_json: null // this property needs to exist to display the inspiration source of a message (creativity widget)
             },
-
+            
+            /**
+             * @return {String} the subject, with any re: stripped
+             */
+            getSubjectNoRe: function () {
+              var subject = this.get('subject');
+              if(subject) {
+                return subject.replace(/( *)?(RE) *(:|$) */igm, "");
+              }
+              else {
+                return subject;
+              }
+            },
+            
             /**
              * @return {Number} the quantity of all descendants
              */
@@ -60,22 +74,24 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
             },
 
             /**
-             * Return the parent idea
-             * @return {MessageModel}
+             * Return the parent message (if any)
+             * @return {Promise}
              */
-            getParent: function () {
-                return this.collection.findWhere({ '@id': this.get('parentId') });
+            getParentPromise: function () {
+              if(this.get('parentId')) {
+                return this.collection.collectionManager.getMessageFullModelPromise(this.get('parentId'));
+              }
+              return this.get('parentId');
             },
 
             /**
-             * Return all segments in the annotator format
+             * Returns a promise to all segments in the annotator format
              * @return {Object[]}
              */
             getAnnotationsPromise: function () {
-                var that = this,
-                    deferred = $.Deferred();
-                this.getExtractsPromise().done(
-                    function (extracts) {
+                var that = this;
+                return this.getExtractsPromise()
+                    .then(function (extracts) {
                         var ret = [];
 
                         _.each(extracts, function (extract) {
@@ -84,10 +100,9 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
                             ret.push(_.clone(extract.attributes));
                         });
 
-                        deferred.resolve(ret);
+                        return ret;
                     }
                 );
-                return deferred.promise();
             },
 
             /**
@@ -95,57 +110,31 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
              * @return {Object[]}
              */
             getExtractsPromise: function () {
-                var that = this,
-                    deferred = $.Deferred();
-                this.collection.collectionManager.getAllExtractsCollectionPromise().done(
-                    function (allExtractsCollection) {
-                        var extracts = allExtractsCollection.where({ idPost: that.getId() });
-                        deferred.resolve(extracts);
+                var that = this;
+                return this.collection.collectionManager.getAllExtractsCollectionPromise()
+                    .then(function (allExtractsCollection) {
+                        return Promise.resolve(allExtractsCollection.where({idPost: that.getId()}))
+                            .catch(function(e){
+                                console.error(e.statusText);
+                            });
                     }
                 );
-                return deferred.promise();
-            },
-
-            /**
-             * Returns the toppest parent
-             * @return {MessageModel}
-             */
-            getRootParent: function () {
-                if (this.get('parentId') === null) {
-                    return null;
-                }
-
-                var parent = this.getParent(),
-                    current = null;
-
-                do {
-
-                    if (parent) {
-                        current = parent;
-                        parent = parent.get('parentId') !== null ? parent.getParent() : null;
-                    } else {
-                        parent = null;
-                    }
-
-                } while (parent !== null);
-
-                return current;
-
             },
 
             /** Return a promise for the post's creator
              * @return {$.Defered.Promise}
              */
             getCreatorPromise: function () {
-                var that = this,
-                    deferred = $.Deferred();
-                this.collection.collectionManager.getAllUsersCollectionPromise().done(
-                    function (allUsersCollection) {
-                        var creatorId = that.get('idCreator');
-                        deferred.resolve(allUsersCollection.getById(creatorId));
-                    }
-                );
-                return deferred.promise();
+                var that = this;
+
+                return this.collection.collectionManager.getAllUsersCollectionPromise()
+                    .then(function(allUsersCollection){
+                        return Promise.resolve(allUsersCollection.getById(that.get('idCreator')))
+                            .catch(function(e){
+                                console.error(e.statusText);
+                            });
+                });
+
             },
 
             /**
@@ -166,7 +155,8 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
              * @param {Boolean} value
              */
             setRead: function (value) {
-                var user = Ctx.getCurrentUser();
+                var user = Ctx.getCurrentUser(),
+                    that = this;
 
                 if (user.isUnknownUser()) {
                     // Unknown User can't mark as read
@@ -180,22 +170,23 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
 
                 this.set('read', value, { silent: true });
 
-                var that = this,
-                    url = Ctx.getApiUrl('post_read/') + this.getId(),
-                    ajax;
-
-                ajax = $.ajax(url, {
-                    method: 'PUT',
-                    data: JSON.stringify({ 'read': value }),
-                    contentType: "application/json; charset=utf-8",
-                    dataType: "json",
-                    success: function (data) {
+                this.url = Ctx.getApiUrl('post_read/') + this.getId();
+                this.save({'read': value},{
+                    success: function(model, resp){
                         that.trigger('change:read', [value]);
                         that.trigger('change', that);
-                        //So the unread count is updated in the ideaList
-                        Assembl.reqres.request('ideas:update', data.ideas);
-                    }
+                        Assembl.reqres.request('ideas:update', resp.ideas); // this seems to cost a lot of performance. maybe we should update only the ideas related to this message
+                    },
+                    error: function(model, resp){}
                 });
+
+            },
+
+            validate: function(attrs, options){
+                /**
+                 * check typeof variable
+                 * */
+
             }
         });
 
@@ -216,6 +207,21 @@ define(['underscore', 'jquery', 'app', 'common/context', 'models/base'],
             /** Our data is inside the posts array */
             parse: function (response) {
                 return response.posts;
+            },
+            
+            /** Get the last synthesis 
+             * @return Message.Model or null
+             */
+            getLastSynthesisPost: function () {
+              var lastSynthesisPost = null,
+                  synthesisMessages = this.where({'@type': Types.SYNTHESIS_POST});
+              if (synthesisMessages.length > 0) {
+                _.sortBy(synthesisMessages, function (message) {
+                  return message.get('date');
+                });
+                lastSynthesisPost = _.last(synthesisMessages);
+              }
+              return lastSynthesisPost;
             },
 
             /**

@@ -1,20 +1,18 @@
 'use strict';
 
-define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/messageFamily', 'underscore', 'jquery', 'app', 'common/context', 'models/message', 'utils/i18n', 'views/messageListPostQuery', 'utils/permissions', 'views/messageSend', 'objects/messagesInProgress', 'utils/panelSpecTypes', 'views/assemblPanel', 'common/collectionManager'],
-    function (Backbone, Raven, objectTreeRenderVisitor, MessageFamilyView, _, $, Assembl, Ctx, Message, i18n, PostQuery, Permissions, MessageSendView, MessagesInProgress, PanelSpecTypes, AssemblPanel, CollectionManager) {
+define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/visitors/objectTreeRenderVisitorReSort', 'views/messageFamily', 'views/messageListHeader', 'underscore', 'jquery', 'app', 'common/context', 'models/message', 'utils/i18n', 'views/messageListPostQuery', 'utils/permissions', 'views/messageSend', 'objects/messagesInProgress', 'utils/panelSpecTypes', 'views/assemblPanel', 'common/collectionManager', 'bluebird'],
+    function (Backbone, Raven, objectTreeRenderVisitor, objectTreeRenderVisitorReSort, MessageFamilyView, MessageListHeaderView, _, $, Assembl, Ctx, Message, i18n, PostQuery, Permissions, MessageSendView, MessagesInProgress, PanelSpecTypes, AssemblPanel, CollectionManager, Promise) {
 
         /**
          * Constants
          */
         var DIV_ANNOTATOR_HELP = Ctx.format("<div class='annotator-draganddrop-help'>{0}</div>", i18n.gettext('You can drag the segment above directly to the table of ideas')),
-            DEFAULT_MESSAGE_VIEW_LI_ID_PREFIX = "js_defaultMessageView-",
-            MESSAGE_LIST_VIEW_LI_ID_PREFIX = "messageList-view-",
             MESSAGE_LIST_VIEW_STYLES_CLASS_PREFIX = "js_messageList-view-",
         /* The maximum number of messages that can be loaded at the same time
          * before being removed from memory
          */
             MAX_MESSAGES_IN_DISPLAY = 50,
-        /* The number of messages to load each time the user reaches scrools to
+        /* The number of messages to load each time the user scrolls to
          * the end or beginning of the list.
          */
             MORE_PAGES_NUMBER = 20,
@@ -24,84 +22,78 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
          * @class views.MessageList
          */
         var MessageList = AssemblPanel.extend({
+            template: '#tmpl-messageList',
             panelType: PanelSpecTypes.MESSAGE_LIST,
             className: 'panel messageList',
             lockable: true,
             gridSize: AssemblPanel.prototype.MESSAGE_PANEL_GRID_SIZE,
             minWidth: 400, // basic, may receive idea offset.
             debugPaging: false,
+            debugScrollLogging: false,
             _renderId: 0,
 
             ui: {
                 panelBody: ".panel-body",
-                queryInfo: ".messageList-query-info",
-                viewStyleDropdown: ".js_messageListViewStyle-dropdown",
-                defaultMessageViewDropdown: ".js_defaultMessageView-dropdown",
                 topArea: '.js_messageList-toparea',
                 bottomArea: '.js_messageList-bottomarea',
-                collapseButton: '.js_messageList-collapseButton',
+                //collapseButton: '.js_messageList-collapseButton', // FIXME: this seems to be not used anymore, so I (Quentin) commented it out
                 loadPreviousMessagesButton: '.js_messageList-prevbutton',
                 loadNextMessagesButton: '.js_messageList-morebutton',
+                loadAllButton: '.js_messageList-loadallbutton',
                 messageList: '.messageList-list',
-                userThreadedViewButton: '.messageListViewStyleUserThreaded',
-                userHighlightNewViewButton: '.messageListViewStyleUserHighlightNew',
                 stickyBar: '.sticky-box',
                 replyBox: '.messagelist-replybox',
                 inspireMe: '.js_inspireMe',
-                inspireMeAnchor: '.js_inspireMeAnchor'
+                inspireMeAnchor: '.js_inspireMeAnchor',
+                pendingMessage: '.pendingMessage',
+                contentPending: '.real-time-updates',
+                printButton: '.js_messageListView-print'
+            },
+
+            regions: {
+              messageListHeader: '.messageListHeader'
             },
 
             initialize: function (options) {
+              //console.log("messageList::initialize()");
               Object.getPrototypeOf(Object.getPrototypeOf(this)).initialize.apply(this, arguments);
               var that = this,
-                  collectionManager = new CollectionManager();
-              that.renderIsComplete = false;
-              that.showMessageByIdInProgress = false;
+                  collectionManager = new CollectionManager(),
+                  d = new Date();
+              this.renderIsComplete = false;
+              this.showMessageByIdInProgress = false;
+              this.scrollLoggerPreviousScrolltop = 0;
+              this.scrollLoggerPreviousTimestamp = d.getTime() ;
               this.renderedMessageViewsCurrent = {};
+              this._nbPendingMessage = 0;
+              this.aReplyBoxHasFocus = false;
+
+              this.expertViewIsAvailable = !Ctx.getCurrentUser().isUnknownUser(); // TODO: enable it also for logged out visitors (but for this we need to disable user-related filters, like read)
+              this.isUsingExpertView = (Ctx.getCurrentInterfaceType() === Ctx.InterfaceTypes.EXPERT); // TODO?: have a dedicated flag
 
               this.setViewStyle(this.getViewStyleDefById(this.storedMessageListConfig.viewStyleId));
               this.defaultMessageStyle = Ctx.getMessageViewStyleDefById(this.storedMessageListConfig.messageStyleId) || Ctx.AVAILABLE_MESSAGE_VIEW_STYLES.PREVIEW;
 
-              
-              /**
-               * @ghourlier
-               * TODO: Usually it would necessary to push notification rather than fetch every time the model change
-               * Need to be a call to action
-               * Benoitg:  Why?  There is no way to know if the message is, or isn't relevent to the user, and worthy
-               * of notification.  Everything else updates realtime, why make an exception for messages?
-               * */
-              collectionManager.getAllMessageStructureCollectionPromise().done(
-                  function (allMessageStructureCollection) {
-                      that.listenTo(allMessageStructureCollection, 'add reset', function () {
-                          /*
-                           Disable refresh if a message is being written.
-                           Not as necessary now that we save messages,
-                           but it prevents a jarring refresh, so keeping it as a comment.
+              collectionManager.getAllMessageStructureCollectionPromise()
+                .then(function (allMessageStructureCollection) {
 
-                           var messageFields = that.$('.messageSend-body');
-                           function not_empty(b) {
-                           return b.value.length != 0;
-                           };
+                  that.resetPendingMessages(allMessageStructureCollection);
 
-                           if (_.any(messageFields, not_empty)) {
-                           return;
-                           }
-                           messageFields = that.$('.messageSend-subject');
-                           if (_.any(messageFields, not_empty)) {
-                           return;
-                           }
-                           */
-                          that.currentQuery.invalidateResults();
-                          that.render();
-                      });
-                  }
+                  var callback = _.bind(function() {
+                    //Here, this is the collection
+                    var nbPendingMessage = this.length - that._initialLenAllMessageStructureCollection;
+                    that.showPendingMessages(nbPendingMessage);
+                  }, allMessageStructureCollection);
+
+                  that.listenTo(allMessageStructureCollection, 'add', callback);
+                }
               );
 
-              collectionManager.getAllExtractsCollectionPromise().done(
-                  function (allExtractsCollection) {
-                      that.listenTo(allExtractsCollection, 'add remove reset', function(eventName) {
+              collectionManager.getAllExtractsCollectionPromise()
+                  .then(function (allExtractsCollection) {
+                      that.listenToOnce(allExtractsCollection, 'add remove reset', function(eventName) {
                           // console.log("about to call initAnnotator because allExtractsCollection was updated with:", eventName);
-                          that.initAnnotator;
+                          that.initAnnotator();
                         });
                       }
                   );
@@ -126,7 +118,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
 
               this.listenTo(Assembl.vent, 'messageList:showMessageById', function (id, callback) {
                 //console.log("Calling showMessageById from messageList:showMessageById with params:", id, callback);
-                that.showMessageById(id, callback);
+                  that.showMessageById(id, callback);
               });
 
               this.listenTo(Assembl.vent, 'messageList:addFilterIsRelatedToIdea', function (idea, only_unread) {
@@ -169,6 +161,14 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                       that.currentQuery.clearAllFilters();
                   }
               });
+
+              this.listenTo(Assembl.vent, 'messageList:replyBoxFocus', function () {
+                that.onReplyBoxFocus();
+              });
+
+              this.listenTo(Assembl.vent, 'messageList:replyBoxBlur', function () {
+                that.onReplyBoxBlur();
+              });
             },
 
             /**
@@ -176,40 +176,27 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * @type {Object}
              */
             events: function () {
-                var that = this,
-                    data = {
-                        'click .post-query-filter-info .js_deleteFilter ': 'onFilterDeleteClick',
+              var data = {
+                'click .post-query-filter-info .js_deleteFilter ': 'onFilterDeleteClick',
 
-                        'click .js_messageList-allmessages': 'showAllMessages',
-                        'click .js_messageList-onlyorphan': 'addFilterIsOrphanMessage',
-                        'click .js_messageList-onlysynthesis': 'addFilterIsSynthesMessage',
-                        'click .js_messageList-isunread': 'addFilterIsUnreadMessage',
+                'click .js_messageList-allmessages': 'showAllMessages',
 
-                        'click .js_messageList-fullScreenButton': 'setFullscreen',
+                'click .js_messageList-prevbutton': 'showPreviousMessages',
+                'click .js_messageList-morebutton': 'showNextMessages',
+                'click @ui.loadAllButton': 'showAllMessagesAtOnce',
 
-                        'click .js_messageList-prevbutton': 'showPreviousMessages',
-                        'click .js_messageList-morebutton': 'showNextMessages',
+                'click .js_openTargetInModal': 'openTargetInModal',
 
-                        'click .js_openTargetInModal': 'openTargetInModal',
+                'click .js_scrollToMsgBox': 'scrollToMsgBox',
 
-                        'click .js_scrollToMsgBox': 'scrollToMsgBox'
-                    };
-
-                _.each(this.ViewStyles, function (messageListViewStyle) {
-                    var key = 'click .' + messageListViewStyle.css_class;
-                    data[key] = 'onMessageListViewStyle';
-                });
-
-                _.each(Ctx.AVAILABLE_MESSAGE_VIEW_STYLES, function (messageViewStyle) {
-                    var key = 'click .' + that.getMessageViewStyleCssClass(messageViewStyle);
-                    data[key] = 'onDefaultMessageViewStyle';
-                });
-
-                return data;
+                'click .js_loadPendingMessages': 'loadPendingMessages',
+                'click @ui.printButton': 'togglePrintableClass'
+              };
+              return data;
             },
 
             getTitle: function () {
-                return i18n.gettext('Conversations');
+                return i18n.gettext('Discussion');
             },
 
             ViewStyles: {
@@ -221,21 +208,29 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 CHRONOLOGICAL: {
                     id: "chronological",
                     css_class: MESSAGE_LIST_VIEW_STYLES_CLASS_PREFIX + "chronological",
-                    label: i18n.gettext('Chronological')
+                    label: i18n.gettext('Oldest first')
                 },
                 REVERSE_CHRONOLOGICAL: {
                     id: "reverse_chronological",
                     css_class: MESSAGE_LIST_VIEW_STYLES_CLASS_PREFIX + "activityfeed",
-                    label: i18n.gettext('Reverse-Chronological')
+                    label: i18n.gettext('Newest first')
                 },
                 NEW_MESSAGES: {
                     id: "new_messages",
                     css_class: MESSAGE_LIST_VIEW_STYLES_CLASS_PREFIX + "newmessages",
-                    label: i18n.gettext('New Messages')
+                    label: i18n.gettext('New messages threaded')
                 }
             },
 
             currentViewStyle: null,
+            
+            /** 
+             * Is the current view style a non-flat view
+             */
+            isViewStyleThreadedType: function () {
+              return this.currentViewStyle === this.ViewStyles.THREADED || 
+                     this.currentViewStyle === this.ViewStyles.NEW_MESSAGES;
+            },
 
             /**
              * If there were any render requests inhibited while rendering was
@@ -253,7 +248,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     this.newTopicView.savePartialMessage();
                 }
                 // Otherwise I need to work from the DOM and not view objects, for those are buried in messages
-                var messageFields = this.$('.messageSend-body');
+                var messageFields = this.$('.js_messageSend-body');
 
                 function not_empty(b) {
                     return b.value.length != 0;
@@ -283,36 +278,6 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 });
                 return retval;
             },
-            /**
-             * get a view style css_class
-             * @param {messageViewStyle}
-             * @return {String}
-             */
-            getMessageViewStyleCssClass: function (messageViewStyle) {
-                return DEFAULT_MESSAGE_VIEW_LI_ID_PREFIX + messageViewStyle.id;
-            },
-
-            /**
-             * get a view style definition by id
-             * @param {messageViewStyle.id}
-             * @return {messageViewStyle or undefined}
-             */
-            getMessageViewStyleDefByCssClass: function (messageViewStyleClass) {
-                var that = this;
-                return  _.find(Ctx.AVAILABLE_MESSAGE_VIEW_STYLES, function (messageViewStyle) {
-                    return that.getMessageViewStyleCssClass(messageViewStyle) == messageViewStyleClass;
-                });
-            },
-            /**
-             * get a view style definition by id
-             * @param {messageViewStyle.id}
-             * @return {messageViewStyle or undefined}
-             */
-            getMessageListViewStyleDefByCssClass: function (messageListViewStyleClass) {
-                return  _.find(this.ViewStyles, function (viewStyle) {
-                    return viewStyle.css_class == messageListViewStyleClass;
-                });
-            },
 
             ideaChanged: function () {
                 var that = this;
@@ -326,39 +291,41 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * Synchronizes the panel with the currently selected idea (possibly none)
              */
             syncWithCurrentIdea: function () {
-                var currentIdea = this.getContainingGroup().getCurrentIdea(),
-                    filterValue,
-                    that = this;
+              var currentIdea = this.getContainingGroup().getCurrentIdea(),
+              filterValue,
+              snapshot = this.currentQuery.getFilterConfigSnapshot();
 
-                //Ctx.openPanel(this);
-                //!currentIdea?filterValue=null:filterValue=currentIdea.getId();
-                //console.log("messageList:syncWithCurrentIdea(): New idea is now: ",currentIdea, this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, filterValue));
-                //TODO benoitg - this logic should really be in postQuery, not here - 2014-07-29
-                if (currentIdea && this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, currentIdea.getId())) {
-                    //Filter is already in sync
-                    return;
-                }
-                else if (!currentIdea && (this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, null) == false)) {
-                    //Filter is already in sync
-                    //TODO:  Detect the case where there is no idea selected, and we already have no filter on ideas
-                    return;
-                }
-                else {
-                    this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, null);
-                    this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, null);
-                    this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_SYNTHESIS, null);
+              //Ctx.openPanel(this);
+              //!currentIdea?filterValue=null:filterValue=currentIdea.getId();
+              //console.log("messageList:syncWithCurrentIdea(): New idea is now: ",currentIdea, this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, filterValue));
+              //TODO benoitg - this logic should really be in postQuery, not here - 2014-07-29
+              if (currentIdea && this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, currentIdea.getId())) {
+                //Filter is already in sync
+                return;
+              }
+              else if (!currentIdea && (this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, null) === false)) {
+                //Filter is already in sync
+                //TODO:  Detect the case where there is no idea selected, and we already have no filter on ideas
+                return;
+              }
+              else {
+                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, null);
+                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, null);
+                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_SYNTHESIS, null);
 
-                    if (currentIdea) {
-                        this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_ORPHAN, null);
-                        this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, currentIdea.getId());
-                        //app.openPanel(app.messageList);
-                    }
-                    if (Ctx.debugRender) {
-                        console.log("messageList:syncWithCurrentIdea(): triggering render because new idea was selected");
-                    }
-                    //console.log("messageList:syncWithCurrentIdea(): Query is now: ",this.currentQuery._query);
-                    this.render();
+                if (currentIdea) {
+                  this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_ORPHAN, null);
+                  this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, currentIdea.getId());
+                  //app.openPanel(app.messageList);
                 }
+                if(this.currentQuery.isFilterConfigSameAsSnapshot(snapshot) === false) {
+                  if (Ctx.debugRender) {
+                    console.log("messageList:syncWithCurrentIdea(): triggering render because the filter was modified");
+                    console.log("messageList:syncWithCurrentIdea(): Query is now: ",this.currentQuery._query);
+                  }
+                  this.render();
+                }
+              }
             },
 
             showInspireMeIfAvailable: function(){
@@ -395,27 +362,10 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
             },
 
             /**
-             * The template
-             * @type {_.template}
-             */
-            template: '#tmpl-messageList',
-
-            /**
              * The collapse/expand flag
              * @type {Boolean}
              */
             collapsed: false,
-
-            /**
-             * List of message id's to be displayed in the interface
-             * @type {MessageCollection}
-             *
-             * TODO:  THIS IS TO BE REPLACED WITH getResultMessageIdCollectionPromise(), which is the same data
-             */
-            DEPRECATEDmessageIdsToDisplay: [],
-
-            allMessageStructureCollection: undefined,
-            //messages
 
             /**
              * The array generated by objectTreeRenderVisitor's data_by_object
@@ -557,56 +507,93 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 return this.minWidth + offset;
             },
 
+            renderMessageListHeader: function() {
+              var messageListHeader = new MessageListHeaderView({
+                  expertViewIsAvailable: this.expertViewIsAvailable, 
+                  isUsingExpertView: this.isUsingExpertView,
+                  ViewStyles: this.ViewStyles,
+                  currentViewStyle: this.currentViewStyle,
+                  messageList: this,
+                  defaultMessageStyle: this.defaultMessageStyle,
+                  currentQuery: this.currentQuery
+              });
+              this.getRegion("messageListHeader").show(messageListHeader);
+            },
+
+            onSetIsUsingExpertView: function(isUsingExpertView) {
+                //console.log("messageList::onSetIsUsingExpertView()");
+                this.isUsingExpertView = isUsingExpertView;
+            },
+
             /**
-             *
-
+             * Calculate the offsets of messages actually displayed from a request
+             * @return The actual offset array
              */
-            calculateThreadedMessagesOffsets: function (data_by_object, order_lookup_table, requestedOffsets) {
-                var returnedDataOffsets = {},
-                    numMessages = order_lookup_table.length;
+            calculateMessagesOffsets: function (requestedOffsets) {
+              var returnedDataOffsets = {},
+                  len = _.size(this.resultMessageIdCollection);
+              
+              if ((this.currentViewStyle == this.ViewStyles.THREADED) ||
+                  (this.currentViewStyle == this.ViewStyles.NEW_MESSAGES)) {
+                returnedDataOffsets = this._calculateThreadedMessagesOffsets(this.visitorViewData, this.visitorOrderLookupTable, requestedOffsets);
+              } else {
+                returnedDataOffsets['offsetStart'] = _.isUndefined(requestedOffsets['offsetStart']) ? 0 : requestedOffsets['offsetStart'];
+                returnedDataOffsets['offsetEnd'] = _.isUndefined(requestedOffsets['offsetEnd']) ? MORE_PAGES_NUMBER - 1 : requestedOffsets['offsetEnd'];
+                if (returnedDataOffsets['offsetEnd'] >= len) {
+                    returnedDataOffsets['offsetEnd'] = len - 1;
+                }
+              }
+              if (this.debugPaging) {
+                console.log("calculateMessagesOffsets() called with requestedOffsets:", requestedOffsets, " returning ", returnedDataOffsets);
+              }
+              return returnedDataOffsets;
+            },
 
-                if (numMessages > 0) {
-                    //Find preceding root message, and include it
-                    //It is not possible that we do not find one if there is
-                    //at least one message
-                    //Gaby: Never declare an incremental variable "i" out of loop, it's a memory leak
-                    for (var i = requestedOffsets['offsetStart']; i >= 0; i--) {
+            _calculateThreadedMessagesOffsets: function (data_by_object, order_lookup_table, requestedOffsets) {
+              var returnedDataOffsets = {},
+                  numMessages = order_lookup_table.length;
 
-                        if (data_by_object[order_lookup_table[i]]['last_ancestor_id'] === null) {
-
-                            returnedDataOffsets['offsetStart'] = i;
-                            break;
-                        }
-                    }
+              if (numMessages > 0) {
+                //Find preceding root message, and include it
+                //It is not possible that we do not find one if there is
+                //at least one message
+                //Gaby: Never declare an incremental variable "i" out of loop, it's a memory leak
+                for (var i = requestedOffsets['offsetStart']; i >= 0; i--) {
+                  if (data_by_object[order_lookup_table[i]]['last_ancestor_id'] === null) {
+                    returnedDataOffsets['offsetStart'] = i;
+                    break;
+                  }
+                }
+              }
+              else {
+                returnedDataOffsets['offsetStart'] = 0;
+              }
+              if (requestedOffsets['offsetEnd'] > (numMessages - 1)) {
+                returnedDataOffsets['offsetEnd'] = numMessages - 1;
+              }
+              else {
+                if (data_by_object[order_lookup_table[requestedOffsets['offsetEnd']]]['last_ancestor_id'] === null) {
+                  returnedDataOffsets['offsetEnd'] = requestedOffsets['offsetEnd'];
                 }
                 else {
-                    returnedDataOffsets['offsetStart'] = 0;
-                }
-                if (requestedOffsets['offsetEnd'] > (numMessages - 1)) {
-                    returnedDataOffsets['offsetEnd'] = (numMessages - 1);
-                }
-                else {
-                    if (data_by_object[order_lookup_table[requestedOffsets['offsetEnd']]]['last_ancestor_id'] === null) {
-                        returnedDataOffsets['offsetEnd'] = requestedOffsets['offsetEnd'];
-                    }
-                    else {
-                        //If the requested offsetEnd isn't a root, find next root message, and stop just
-                        //before it
+                  //If the requested offsetEnd isn't a root, find next root message, and stop just
+                  //BEFORE it
 
-                        for (var i = requestedOffsets['offsetEnd']; i < numMessages; i++) {
-                            if (data_by_object[order_lookup_table[i]]['last_ancestor_id'] === null) {
-                                returnedDataOffsets['offsetEnd'] = i - 1;
-                                break;
-                            }
-                        }
-                        if (returnedDataOffsets['offsetEnd'] === undefined) {
-                            //It's possible we didn't find a root, if we are at the very end of the list
-                            returnedDataOffsets['offsetEnd'] = numMessages;
-                        }
+                  for (var i = requestedOffsets['offsetEnd']; i < numMessages; i++) {
+                    if (data_by_object[order_lookup_table[i]]['last_ancestor_id'] === null) {
+                      //Carefull here, the i matches the offset (0 based), 
+                      //the -1 is to stop one message BEFORE the found root
+                      returnedDataOffsets['offsetEnd'] = i - 1;
+                      break;
                     }
+                  }
+                  if (returnedDataOffsets['offsetEnd'] === undefined) {
+                    //It's possible we didn't find a root, if we are at the very end of the list
+                    returnedDataOffsets['offsetEnd'] = numMessages - 1;
+                  }
                 }
-
-                return returnedDataOffsets;
+              }
+              return returnedDataOffsets;
             },
 
             /**
@@ -660,35 +647,35 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 return requestedOffsets;
             },
 
-
-            /**
-             * Returns the messages to be rendered
-             * @return {Message[]}
-             */
-            getAllMessageStructureModelsToDisplay: function () {
-                var toReturn = [],
-                    that = this,
-                    model = null,
-                    messages = this.allMessageStructureCollection;
-
-                that.DEPRECATEDmessageIdsToDisplay.forEach(function (id) {
-                    model = messages.get(id);
-                    if (model) {
-                        toReturn.push(model);
-                    } else {
-                        console.error('ERROR:  getAllMessageStructureModelsToDisplay():  Message with id ' + id + ' not found!');
-                    }
-                });
-
-                return toReturn;
-            },
-
             /** Essentially the default value of showMessages.
              * Whoever first calls it will get this as the first value of the messagelist upon render */
             requestMessages: function (requestedOffsets) {
                 this._requestedOffsets = requestedOffsets;
             },
 
+            /** 
+             * Get the message ids to show, or shown onscreen for a specific 
+             * offset
+             * @return list of message ids, in the order they are shown onscreen
+             * */
+            getMessageIdsToShow: function (requestedOffsets) {
+              var messageIdsToShow = [],
+                  returnedOffsets = this.calculateMessagesOffsets(requestedOffsets);
+              if ((this.currentViewStyle == this.ViewStyles.THREADED) ||
+                  (this.currentViewStyle == this.ViewStyles.NEW_MESSAGES)) {
+                messageIdsToShow = this.visitorOrderLookupTable.slice(returnedOffsets['offsetStart'], returnedOffsets['offsetEnd']+1);
+              } else {
+                if (this.debugPaging) {
+                  console.log("getMessageIdsToShow() about to slice collection", this.resultMessageIdCollection);
+                }
+                messageIdsToShow = this.resultMessageIdCollection.slice(returnedOffsets['offsetStart'], returnedOffsets['offsetEnd']+1);
+              }
+              if (this.debugPaging) {
+                console.log("getMessageIdsToShow() called with requestedOffsets:", requestedOffsets, " returning ", _.size(messageIdsToShow), "/", _.size(this.resultMessageIdCollection), " message ids: ", messageIdsToShow);
+              }
+              return messageIdsToShow;
+            },
+            
             /**
              * Load the new batch of messages according to the requested `offsetStart`
              * and `offsetEnd` prop
@@ -698,21 +685,21 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
             showMessages: function (requestedOffsets) {
                 var that = this,
                     views_promise,
-                    models,
                     offsets,
                     numMessages,
+                    messageIdsToShow,
                     returnedOffsets = {},
-                    messageIdsToShow = [],
                     messageFullModelsToShowPromise,
-                    previousScrollTarget;
+                    previousScrollTarget,
+                    renderId = _.clone(this._renderId);
+                //Because of a hack to call showMessageById from render_real
+                //Note that this can also be set to false in onRender()
+                this.renderIsComplete = false;
+                
 
-                this.renderIsComplete = false;//Because of a hack to call showMessageById from render_real
-
-                if (this.debugPaging) {
+                if (this.debugPaging || Ctx.debugRender) {
                     console.log("showMessages() called with requestedOffsets:", requestedOffsets);
                 }
-                //Note that this can also be set to false in onRender()
-                that.renderIsComplete = false;
 
                 if (!requestedOffsets) {
                     if (requestedOffsets === undefined) {
@@ -721,7 +708,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                         }
                         this.requestMessages({
                             offsetStart: 0,
-                            offsetEnd: MORE_PAGES_NUMBER
+                            offsetEnd: MORE_PAGES_NUMBER - 1
                         });
                     }
                     if (that.debugPaging) {
@@ -747,27 +734,25 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                  */
                 this.renderedMessageViewsCurrent = {};
                 this.suspendAnnotatorRefresh();
-
-                if ((this.currentViewStyle == this.ViewStyles.THREADED) ||
-                    (this.currentViewStyle == this.ViewStyles.NEW_MESSAGES)) {
-                    models = _.clone(this.visitorRootMessagesToDisplay);
-                    numMessages = _.size(that.visitorOrderLookupTable);
-                    returnedOffsets = this.calculateThreadedMessagesOffsets(this.visitorViewData, that.visitorOrderLookupTable, requestedOffsets);
-                    messageIdsToShow = this.visitorOrderLookupTable.slice(returnedOffsets['offsetStart'], returnedOffsets['offsetEnd']);
-                    var collectionManager = new CollectionManager();
-
-                    messageFullModelsToShowPromise = collectionManager.getMessageFullModelsPromise(messageIdsToShow);
-                    views_promise = this.getRenderedMessagesThreaded(models, 1, this.visitorViewData, returnedOffsets);
+                
+                returnedOffsets = this.calculateMessagesOffsets(requestedOffsets);
+                messageIdsToShow = this.getMessageIdsToShow(requestedOffsets);
+                numMessages = _.size(this.resultMessageIdCollection);
+                if ((this.currentViewStyle === this.ViewStyles.THREADED) ||
+                    (this.currentViewStyle === this.ViewStyles.NEW_MESSAGES)) {
+                  views_promise = this.getRenderedMessagesThreadedPromise(_.clone(this.visitorRootMessagesToDisplay), 1, this.visitorViewData, messageIdsToShow);
                 } else {
-                    models = this.getAllMessageStructureModelsToDisplay();
-                    numMessages = _.size(models);
-                    views_promise = this.getRenderedMessagesFlat(models, requestedOffsets, returnedOffsets);
+                  views_promise = this.getRenderedMessagesFlatPromise(messageIdsToShow);
                 }
 
                 this._offsetStart = returnedOffsets['offsetStart'];
                 this._offsetEnd = returnedOffsets['offsetEnd'];
 
-                $.when(views_promise).done(function (views) {
+                return views_promise.then(function (views) {
+                    if(that._renderId != renderId) {
+                      console.log("showMessages() for render ", renderId, "got it's views, but render ",that._renderId," is already in progress.  Aborting");
+                      return false;
+                    }
                     if (that.debugPaging) {
                         console.log("showMessages() showing requestedOffsets:", requestedOffsets, "returnedOffsets:", returnedOffsets, "messageIdsToShow", messageIdsToShow, "out of numMessages", numMessages, "root views", views);
                     }
@@ -779,12 +764,13 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                         that.ui.messageList.html(views);
                     }
                     that.scrollToPreviousScrollTarget();
+                    that.$el.find('.js_messageList-loadprevloader').addClass('hidden');
                     if (that._offsetStart <= 0) {
                         that.ui.topArea.addClass('hidden');
                     } else {
                         that.ui.topArea.removeClass('hidden');
                     }
-
+                    that.$el.find('.js_messageList-loadmoreloader').addClass('hidden');
                     if (that._offsetEnd >= (numMessages - 1)) {
                         that.ui.bottomArea.addClass('hidden');
                     } else {
@@ -792,8 +778,13 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     }
 
                     that.resumeAnnotatorRefresh();
+                    that.unblockPanel();
                     that.renderIsComplete = true;
                     that.trigger("messageList:render_complete", "Render complete");
+                    return true;
+                }).catch(function(e) {
+                  console.error("An error occured during rendering: ", e);
+                  that.ui.messageList.html("<div class='error'>We are sorry, a technical error occured during rendering.</div>");
                 });
 
             },
@@ -896,7 +887,8 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              */
             showNextMessages: function () {
                 var requestedOffsets = {};
-
+                this.$el.find('.js_messageList-loadmoreloader').removeClass('hidden');
+                this.ui.bottomArea.addClass('hidden');
                 requestedOffsets = this.getNextMessagesRequestedOffsets();
                 //console.log("showNextMessages calling showMessages");
                 this.showMessages(requestedOffsets);
@@ -907,10 +899,55 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              */
             showPreviousMessages: function () {
                 var requestedOffsets = {};
-
+                this.$el.find('.js_messageList-loadprevloader').removeClass('hidden');
+                this.ui.topArea.addClass('hidden');
                 requestedOffsets = this.getPreviousMessagesRequestedOffsets();
                 //console.log("showPreviousMessages calling showMessages");
                 this.showMessages(requestedOffsets);
+            },
+
+            /**
+             * Show all messages on screen, regardless of the time it will take.
+             */
+            showAllMessagesAtOnce: function () {
+              var that = this;
+              this.$el.find('.js_messageList-loadmoreloader').removeClass('hidden');
+              this.ui.bottomArea.addClass('hidden');
+              this.currentQuery.getResultMessageIdCollectionPromise().then(function(resultMessageIdCollection) {
+                var requestedOffsets = {
+                'offsetStart': 0,
+                'offsetEnd': _.size(resultMessageIdCollection)
+                };
+                //console.log("showAllMessages calling showMessages");
+                that.showMessages(requestedOffsets);
+              });
+            },
+
+            isInPrintableView: function () {
+              if(this.ui.messageList.hasClass('printable')) {
+                return true
+              }
+              else {
+                return false;
+              }
+            },
+
+            /**
+             * Hide elements of the messageList to make it more printable and
+             * copy-pastable in word processing documents
+             */
+            togglePrintableClass: function (ev) {
+              console.log("togglePrintableClass", $(ev.currentTarget), this.ui.messageList);
+              if(this.isInPrintableView()) {
+                this.ui.messageList.removeClass('printable');
+                $(ev.currentTarget).addClass('btn-secondary');
+                $(ev.currentTarget).removeClass('btn-primary');
+              }
+              else {
+                this.ui.messageList.addClass('printable');
+                $(ev.currentTarget).addClass('btn-primary');
+                $(ev.currentTarget).removeClass('btn-secondary');
+              }
             },
 
             /**
@@ -933,7 +970,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
             },
 
             /**
-             * Get the requested offsets when scrooling up
+             * Get the requested offsets when scrolling up
              * @private
              */
             getPreviousMessagesRequestedOffsets: function () {
@@ -979,7 +1016,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
             serializeData: function () {
                 return {
                     Ctx: Ctx,
-                    availableViewStyles: this.ViewStyles,
+                    //availableViewStyles: this.ViewStyles,
                     currentViewStyle: this.currentViewStyle,
                     collapsed: this.collapsed,
                     canPost: Ctx.getCurrentUser().can(Permissions.ADD_POST),
@@ -988,13 +1025,14 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
             },
 
             isMessageIdInResults: function (messageId, resultMessageIdList) {
-                if (!resultMessageIdList) {
-                    throw new Error("isMessageIdInResults():  resultMessageIdList needs to be provided");
-                }
+              //console.log("isMessageIdInResults called with ", messageId, resultMessageIdList)
+              if (!resultMessageIdList) {
+                throw new Error("isMessageIdInResults():  resultMessageIdList needs to be provided");
+              }
 
-                return false != _.find(resultMessageIdList, function (resultMessageId) {
-                    return messageId === resultMessageId;
-                });
+              return undefined != _.find(resultMessageIdList, function (resultMessageId) {
+                return messageId === resultMessageId;
+              });
             },
 
             /**
@@ -1033,15 +1071,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
 
               Ctx.initTooltips(this.$el);
 
-              if (Ctx.getCurrentInterfaceType() === Ctx.InterfaceTypes.SIMPLE) {
-                  this.renderUserViewButtons();
-              } else {
-                  this.renderQueryInfo();
-              }
-
-              this.renderCollapseButton();
-              this.renderDefaultMessageViewDropdown();
-              this.renderMessageListViewStyleDropdown();
+              //this.renderCollapseButton(); // FIXME: this seems to be not used anymore, so I (Quentin) commented it out
 
               var options = {
                 'allow_setting_subject': true,
@@ -1053,21 +1083,24 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 'msg_in_progress_ctx': partialMessageContext,
                 'msg_in_progress_title': partialMessage['title'],
                 'msg_in_progress_body': partialMessage['body'],
-                'messageList': that
+                'messageList': that,
+                'show_target_context_with_choice': true
               };
 
               var currentIdea = this.getContainingGroup().getCurrentIdea();
+
               if (currentIdea && this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, currentIdea.getId())) {
-                options.reply_idea_id = currentIdea.getId();
+                options.reply_idea = currentIdea;
               }
 
               this.newTopicView = new MessageSendView(options);
               this.$('.messagelist-replybox').html(this.newTopicView.render().el);
               
               var collectionManager = new CollectionManager();
-              $.when(collectionManager.getAllMessageStructureCollectionPromise(),
-                this.currentQuery.getResultMessageIdCollectionPromise()).done(
-                function (allMessageStructureCollection, resultMessageIdCollection) {
+              Promise.join(collectionManager.getAllMessageStructureCollectionPromise(),
+                           this.currentQuery.getResultMessageIdCollectionPromise(),
+                  function (allMessageStructureCollection, resultMessageIdCollection) {
+
                   if (Ctx.debugRender) {
                     console.log("messageList:render_real() collection ready, processing for render id:", renderId);
                   }
@@ -1075,8 +1108,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     console.log("messageList:render_real() collections arrived too late, this is render %d, and render %d is already in progress.  Aborting.", renderId, that._renderId);
                     return;
                   }
-                  that.allMessageStructureCollection = allMessageStructureCollection;
-                  var first_unread_id = that.findFirstUnreadMessageId(that.visitorOrderLookupTable, that.allMessageStructureCollection, resultMessageIdCollection);
+                  var first_unread_id = that.findFirstUnreadMessageId(that.visitorOrderLookupTable, allMessageStructureCollection, resultMessageIdCollection);
                   //console.log("that.showMessageByIdInProgress", that.showMessageByIdInProgress);
                   if (that.showMessageByIdInProgress === false 
                       && that.currentViewStyle === that.ViewStyles.NEW_MESSAGES 
@@ -1133,14 +1165,18 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 if (Ctx.debugRender) {
                     console.log("messageList:onRender() is firing for render id:", renderId);
                 }
-
+;
                 //Clear internal state
                 this._offsetStart = undefined;
                 this._offsetEnd = undefined;
 
                 /* TODO:  Most of this should be a listen to the returned collection */
-                var newDataCallback = function (messageStructureCollection, resultMessageIdCollection) {
+                Promise.join(collectionManager.getAllMessageStructureCollectionPromise(),
+                    this.currentQuery.getResultMessageIdCollectionPromise(),
+                    function (messageStructureCollection, resultMessageIdCollection) {
+
                   var resultMessageIdCollectionReference = resultMessageIdCollection;
+
                   function inFilter(message) {
                         return resultMessageIdCollectionReference.indexOf(message.getId()) >= 0;
                     };
@@ -1159,23 +1195,26 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                   // including zombie views, and we get nested annotator tags as a result.
                   // (Annotator looks at fresh DOM every time).  Is that still the case?  Benoitg - 2014-09-19
                   // TODO long term: Keep them with a real CompositeView.
-                  that.DEPRECATEDmessageIdsToDisplay = resultMessageIdCollection;
+                  that.resultMessageIdCollection = resultMessageIdCollection;
                   that.visitorViewData = {};
                   that.visitorOrderLookupTable = [];
                   that.visitorRootMessagesToDisplay = [];
+
                   messageStructureCollection.visitDepthFirst(objectTreeRenderVisitor(that.visitorViewData, that.visitorOrderLookupTable, that.visitorRootMessagesToDisplay, inFilter));
-                  that = that.render_real();
-                  that.unblockPanel();
-                }
-
-                this.blockPanel();
-
-                $.when(collectionManager.getAllMessageStructureCollectionPromise(),
-                    this.currentQuery.getResultMessageIdCollectionPromise()).done(
-                        newDataCallback);
-
-                //Why isn't this within the when() above?  benoitg 2015-01-28
-                this.ui.panelBody.scroll(function () {
+                  
+                  that.visitorOrderLookupTable = [];
+                  that.visitorRootMessagesToDisplay = [];
+                  objectTreeRenderVisitorReSort(
+                      that.visitorViewData, 
+                      that.visitorOrderLookupTable, 
+                      that.visitorRootMessagesToDisplay, 
+                      function (message) {
+                        return message.get('date');
+                      });
+                  that.render_real();
+                  that.showInspireMeIfAvailable();
+                  that.renderMessageListHeader();
+                  that.ui.panelBody.scroll(function () {
 
                     var msgBox = that.$('.messagelist-replybox').height(),
                         scrollH = $(this)[0].scrollHeight - (msgBox + 25),
@@ -1184,49 +1223,25 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     if (panelScrollTop >= scrollH) {
                         that.ui.stickyBar.fadeOut();
                     } else {
-                        that.ui.stickyBar.fadeIn();
+                        if ( !that.aReplyBoxHasFocus ){
+                          that.ui.stickyBar.fadeIn();
+                        }
                     }
-
+                    
+                    //This event cannot be bound in ui, because backbone binds to 
+                    //the top element and scroll does not propagate
+                    that.$(".panel-body").scroll(that, that.scrollLogger);
+                    
+                    });
                 });
 
-                this.showInspireMeIfAvailable();
-
-            },
-            /**
-             * Renders the search result information
-             */
-            renderQueryInfo: function () {
-                this.ui.queryInfo.html(this.currentQuery.getHtmlDescription());
+              this.blockPanel();
             },
 
-            /**
-             * Renders the search result information
-             */
-            renderUserViewButtons: function () {
-                var resultNumTotal,
-                    resultNumUnread;
-
-                if (this.currentViewStyle == this.ViewStyles.THREADED) {
-                    this.ui.userHighlightNewViewButton.removeClass('selected');
-                    this.ui.userThreadedViewButton.addClass('selected');
-                }
-                else if (this.currentViewStyle == this.ViewStyles.NEW_MESSAGES) {
-                    this.ui.userHighlightNewViewButton.addClass('selected');
-                    this.ui.userThreadedViewButton.removeClass('selected');
-                }
-                else {
-                    console.log("This viewstyle is unknown in user mode:", this.currentViewStyle);
-                }
-                this.currentQuery.getResultNumTotal() === undefined ? resultNumTotal = '' : resultNumTotal = i18n.sprintf("%d", this.currentQuery.getResultNumTotal());
-                this.ui.userThreadedViewButton.html(i18n.sprintf(i18n.gettext('All %s'), resultNumTotal));
-                this.currentQuery.getResultNumUnread() === undefined ? resultNumUnread = '' : resultNumUnread = i18n.sprintf("%d", this.currentQuery.getResultNumUnread());
-                this.ui.userHighlightNewViewButton.html(i18n.sprintf(i18n.gettext('Unread %s'), resultNumUnread));
-            },
-
-
+            // FIXME: this seems to be not used anymore, so I (Quentin) commented it out
             /**
              * Renders the collapse button
-             */
+             * /
             renderCollapseButton: function () {
                 if (this.collapsed) {
                     this.ui.collapseButton.attr('data-tooltip', i18n.gettext('Expand all'));
@@ -1236,42 +1251,10 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     this.ui.collapseButton.removeClass('icon-download-1').addClass('icon-upload');
                 }
             },
+            */
 
-            /**
-             * Renders the default message view style dropdown button
-             */
-            renderDefaultMessageViewDropdown: function () {
-                var that = this,
-                    html = "";
-
-                html += '<a href="#" class="dropdown-toggle" data-toggle="dropdown" aria-expanded="false">';
-                html += this.defaultMessageStyle.label;
-                html += '<span class="icon-arrowdown"></span></a>';
-                html += '<ul class="dropdown-menu">';
-                _.each(Ctx.AVAILABLE_MESSAGE_VIEW_STYLES, function (messageViewStyle) {
-                    html += '<li><a class="' + that.getMessageViewStyleCssClass(messageViewStyle) + '">' + messageViewStyle.label + '</a></li>';
-                });
-                html += '</ul>';
-                this.ui.defaultMessageViewDropdown.html(html);
-            },
-
-            /**
-             * Renders the messagelist view style dropdown button
-             */
-            renderMessageListViewStyleDropdown: function () {
-                var that = this,
-                    html = "";
-
-                html += '<a href="#" class="dropdown-toggle" data-toggle="dropdown" aria-expanded="false">';
-                html += this.currentViewStyle.label;
-                html += '<span class="icon-arrowdown"></span></a>';
-                html += '<ul class="dropdown-menu">';
-                _.each(this.ViewStyles, function (messageListViewStyle) {
-                    html += '<li><a class="' + messageListViewStyle.css_class + '">' + messageListViewStyle.label + '</a></li>';
-                });
-                html += '</ul>';
-                this.ui.viewStyleDropdown.html(html);
-
+            onSetDefaultMessageStyle: function(defaultMessageStyle) {
+              this.defaultMessageStyle = defaultMessageStyle;
             },
 
             /**
@@ -1282,58 +1265,25 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * from requestedOffsets
              * @return {HTMLDivElement[]}
              */
-            getRenderedMessagesFlat: function (messages, requestedOffsets, returnedDataOffsets) {
+            getRenderedMessagesFlatPromise: function (requestedIds) {
                 var that = this,
-                    filter = this.currentFilter,
-                    len = messages.length,
-                    i = _.isUndefined(requestedOffsets['offsetStart']) ? 0 : requestedOffsets['offsetStart'],
                     view,
-                    messageStructureModel,
-                    children,
-                    prop,
-                    isValid,
-                    defer = $.Deferred(),
-                    collectionManager = new CollectionManager(),
-                    requestedIds = [];
+                    collectionManager = new CollectionManager();
 
-                returnedDataOffsets['offsetStart'] = i;
-                returnedDataOffsets['offsetEnd'] = _.isUndefined(requestedOffsets['offsetEnd']) ? MORE_PAGES_NUMBER : requestedOffsets['offsetEnd'];
-                if (returnedDataOffsets['offsetEnd'] < len) {
-                    // if offsetEnd is bigger than len, do not use it
-                    len = returnedDataOffsets['offsetEnd'] + 1;
-                }
-                else {
-                    returnedDataOffsets['offsetEnd'] = len - 1;
-                }
-                for (; i < len; i++) {
-                    messageStructureModel = messages[i];
-                    if (_.isUndefined(messageStructureModel)) {
-                        console.log("FIXME:  This should NOT happen!");
-                        continue;
-                    }
-                    requestedIds.push(messageStructureModel.id);
-                }
-
-                collectionManager.getMessageFullModelsPromise(requestedIds).done(
-                    function (fullMessageModels) {
+                return collectionManager.getMessageFullModelsPromise(requestedIds)
+                    .then(function (fullMessageModels) {
                         var list = [];
                         _.each(fullMessageModels, function (fullMessageModel) {
                             view = new MessageFamilyView({
                                 model: fullMessageModel,
-                                messageListView: that
+                                messageListView: that,
+                                hasChildren: []
                             });
-                            view.hasChildren = false;
                             list.push(view.render().el);
                         });
-                        //console.log("getRenderedMessagesFlat():  Resolving promise with:",list);
-                        defer.resolve(list);
-                    },
-                    function () {
-                        defer.reject();
-                    }
-                );
-
-                return defer.promise();
+                        //console.log("getRenderedMessagesFlatPromise():  Resolving promise with:",list);
+                        return Promise.resolve(list);
+                    });
             },
 
             /**
@@ -1341,10 +1291,10 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * @param {Message.Model[]} list of messages to render at the current level
              * @param {Number} [level=1] The current hierarchy level
              * @param {Object[]} data_by_object render information from ideaRendervisitor
-             * @param {Object[]} offsets the message offset range to show
+             * @param {[]} messageIdsToShow messageIds of the message to show (those in the offset range)
              * @return [jquery.promise]
              */
-            getRenderedMessagesThreaded: function (sibblings, level, data_by_object, offsets) {
+            getRenderedMessagesThreadedPromise: function (sibblings, level, data_by_object, messageIdsToShow) {
                 var that = this,
                     list = [],
                     i = 0,
@@ -1355,11 +1305,10 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     isValid,
                     last_sibling_chain,
                     current_message_info,
-                    defer = $.Deferred(),
                     collectionManager = new CollectionManager(),
                     debug = false;
                 if (debug) {
-                    console.log("getRenderedMessagesThreaded() num sibblings:", _.size(sibblings), "level:", level, "offsets", offsets);
+                    console.log("getRenderedMessagesThreadedPromise() num sibblings:", _.size(sibblings), "level:", level, "messageIdsToShow", messageIdsToShow);
                 }
                 /**  [last_sibling_chain] which of the view's ancestors are the last child of their respective parents.
                  *
@@ -1398,8 +1347,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                         return undefined;
                     }
                     //Only process if message is within requested offsets
-                    if ((current_message_info['traversal_order'] >= offsets['offsetStart'])
-                        && (current_message_info['traversal_order'] <= offsets['offsetEnd'])) {
+                    if (_.contains(messageIdsToShow, model.id)) {
                         return model;
                     }
                     else {
@@ -1413,13 +1361,13 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
 
                 if (!messageStructureModel) {
                     if (debug) {
-                        console.log("getRenderedMessagesThreaded() sibblings is now empty, returning.");
+                        console.log("getRenderedMessagesThreadedPromise() sibblings is now empty, returning.");
                     }
-                    return list;
+                    return Promise.resolve([]);
                 }
                 current_message_info = data_by_object[messageStructureModel.getId()];
                 if (debug) {
-                    console.log("getRenderedMessagesThreaded() processing message: ", messageStructureModel.id, " at offset", current_message_info['traversal_order'], "with", _.size(current_message_info['children']), "children");
+                    console.log("getRenderedMessagesThreadedPromise() processing message: ", messageStructureModel.id, " at offset", current_message_info['traversal_order'], "with", _.size(current_message_info['children']), "children");
                 }
 
                 if (current_message_info['last_sibling_chain'] === undefined) {
@@ -1432,7 +1380,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
 
                 //Process children, if any
                 if (_.size(children) > 0) {
-                    var subviews_promise = this.getRenderedMessagesThreaded(children, level + 1, data_by_object, offsets);
+                    var subviews_promise = this.getRenderedMessagesThreadedPromise(children, level + 1, data_by_object, messageIdsToShow);
                 }
                 else {
                     var subviews_promise = [];
@@ -1440,17 +1388,26 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
 
                 //Process sibblings, if any (this is for-loop rewritten as recursive calls to avoid locking the browser)
                 if (sibblings.length > 0) {
-                    var sibblingsviews_promise = this.getRenderedMessagesThreaded(sibblings, level, data_by_object, offsets);
+                    var sibblingsviews_promise = this.getRenderedMessagesThreadedPromise(sibblings, level, data_by_object, messageIdsToShow);
                 }
                 else {
                     var sibblingsviews_promise = [];
                 }
 
-                $.when(subviews_promise, sibblingsviews_promise, collectionManager.getMessageFullModelPromise(messageStructureModel.id)).done(function (subviews, sibblingsviews, messageFullModel) {
-                    view = new MessageFamilyView({model: messageFullModel, messageListView: that}, last_sibling_chain);
-                    view.currentLevel = level;
+                return Promise.join(subviews_promise, sibblingsviews_promise, collectionManager.getMessageFullModelPromise(messageStructureModel.getId()),
+                    function (subviews, sibblingsviews, messageFullModel) {
+
+                    view = new MessageFamilyView({
+                        model: messageFullModel,
+                        messageListView: that,
+                        currentLevel: level,
+                        hasChildren: subviews,
+                        last_sibling_chain: last_sibling_chain});
+
+                    // pass logic to the init view
+                    //view.currentLevel = level;
                     //Note:  benoitg: We could put a setTimeout here, but apparently the promise is enough to unlock the browser
-                    view.hasChildren = (subviews.length > 0);
+                    //view.hasChildren = (subviews.length > 0);
                     list.push(view.render().el);
                     view.$('.messagelist-children').append(subviews);
 
@@ -1462,19 +1419,23 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                      console.log("Invalid message was:",model);
                      list.push(ghost_element);
                      children = model.getChildren();
-                     ghost_element.find('.messagelist-children').append( this.getRenderedMessagesThreaded(
+                     ghost_element.find('.messagelist-children').append( this.getRenderedMessagesThreadedPromise(
                      children, level+1, data_by_object) );
                      }
                      */
                     if (sibblingsviews.length > 0) {
                         list = list.concat(sibblingsviews);
                     }
-                    defer.resolve(list);
+                    return Promise.resolve(list);
                 });
-
-                return defer.promise();
             },
 
+            annotator_config: {
+                externals: {
+                  "jQuery": "/static/js/bower/jquery/jquery.js",
+                  "styles": "/static/css/lib/annotator.min.css"
+                }
+              },
 
             /**
              * Inits the annotator instance
@@ -1485,19 +1446,20 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 this.destroyAnnotator();
                 //console.log("initAnnotator called");
                 // Saving the annotator reference
-                this.annotator = this.ui.messageList.annotator().data('annotator');
+                this.annotator = this.ui.messageList.annotator(this.annotator_config).data('annotator');
 
                 // TODO: Re-render message in messagelist if an annotation was added...
                 this.annotator.subscribe('annotationCreated', function (annotation) {
                     var collectionManager = new CollectionManager();
-                    collectionManager.getAllExtractsCollectionPromise().done(
-                        function (allExtractsCollection) {
+                   collectionManager.getAllExtractsCollectionPromise()
+                        .then(function (allExtractsCollection) {
                             var segment = allExtractsCollection.addAnnotationAsExtract(annotation, Ctx.currentAnnotationIdIdea);
                             if (!segment.isValid()) {
                                 annotator.deleteAnnotation(annotation);
                             } else if (Ctx.currentAnnotationNewIdeaParentIdea) {
                                 //We asked to create a new idea from segment
-                              console.log("FIXME:  What's the proper behaviour here now that groups are separated?  We should probably find out if the group is the same as the origin, and lock ONLY in that case");
+                              console.log("FIXME:  What's the proper behaviour here now that groups are separated?  " +
+                                  "We should probably find out if the group is the same as the origin, and lock ONLY in that case");
                                 that.getPanelWrapper().autoLockPanel();
 
                                 var newIdea = Ctx.currentAnnotationNewIdeaParentIdea.addSegmentAsChild(segment);
@@ -1506,6 +1468,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                             else {
                                 segment.save(null, {
                                     success: function (model, resp) {
+                                        that.trigger("annotator:success", that.annotator);
                                     },
                                     error: function (model, resp) {
                                         console.error('ERROR: initAnnotator', resp);
@@ -1545,9 +1508,40 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     that.annotatorEditor = annotatorEditor;
                 });
 
+                this.annotator.subscribe('annotationViewerTextField', function(field, annotation){
+                  var collectionManager = new CollectionManager();
+                  //$(field).html("THIS IS A TEST");
+                  //console.log(annotation);
+                  collectionManager.getAllExtractsCollectionPromise().then(function(extracts){
+                    return extracts.get(annotation['@id']).getAssociatedIdeaPromise().then(function(idea){
+                      var txt = '';
+                      if(idea) {
+                        txt = i18n.sprintf(i18n.gettext('This extract was organized in the idea "%s" by the facilitator of the debate'), idea.getShortTitleDisplayText());
+                      }
+                      else {
+                        txt = i18n.gettext('This extract is in a harvester\'s clipboard and hasn\' been sorted yet.');
+                      }
+                      $(field).html(txt);
+
+                    });
+
+                  });
+
+                });
+
+                //FIXME: I do not why but between the init and when the annotation is shown there is a duplicate DOM created
                 this.annotator.subscribe('annotationViewerShown', function (viewer, annotation) {
+                    var controls = $(viewer.element).find(".annotator-controls");
+                        controls.hide();
+
+                    var annotationItem = $(viewer.element).find(".annotator-item");
+
+                    // Delete the duplicate DOM
+                    annotationItem.each(function(index){
+                        if(index > 0) $(this).remove();
+                    });
                     // We do not need the annotator's tooltip
-                    viewer.hide();
+                    //viewer.hide();
                 });
 
                 // We need extra time for annotator to be ready, but I don't
@@ -1590,7 +1584,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * Toggle hoist on a post (filter which shows posts which are descendent of a given post)
              */
             toggleFilterByPostId: function (postId) {
-                var alreadyHere = this.currentQuery.isFilterActive(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, postId);
+                var alreadyHere = this.currentQuery.isFilterInQuery(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, postId);
                 if (alreadyHere) {
                     this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, null);
                     this.render();
@@ -1617,22 +1611,28 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * @param {bool} show only unread messages (this parameter is optional and is a flag)
              */
             addFilterIsRelatedToIdea: function (idea, only_unread) {
+              var snapshot = this.currentQuery.getFilterConfigSnapshot();
                 //Can't filter on an idea at the same time as getting synthesis messages
-                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_SYNTHESIS, null);
-                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_ORPHAN, null);
-                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, null);
-                // this was probably set before... eg by synthesis panel, and is cancelled when clicking an idea.
-                this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, null);
+              this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_SYNTHESIS, null);
+              this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_ORPHAN, null);
+              this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, null);
+              // this was probably set before... eg by synthesis panel, and is cancelled when clicking an idea.
+              this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_DESCENDENT_OF_POST, null);
 
-                if (arguments.length > 1) {
-                    if (only_unread === null)
-                        this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_UNREAD, null);
-                    else
-                        this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_UNREAD, only_unread);
+              if (arguments.length > 1) {
+                if (only_unread === null)
+                  this.currentQuery.clearFilter(this.currentQuery.availableFilters.POST_IS_UNREAD, null);
+                else
+                  this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_UNREAD, only_unread);
+              }
+              this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, idea.getId());
+              if(this.currentQuery.isFilterConfigSameAsSnapshot(snapshot) === false) {
+                if (Ctx.debugRender) {
+                  console.log("messageList:addFilterIsRelatedToIdea(): triggering render because new filter was modified");
+                  console.log("messageList:addFilterIsRelatedToIdea(): Query is now: ",this.currentQuery._query);
                 }
-                this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_IN_CONTEXT_OF_IDEA, idea.getId());
-
                 this.render();
+              }
             },
 
             /**
@@ -1656,18 +1656,17 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_ORPHAN, true);
                 this.render();
             },
-            /**
-             * Load posts that are read or unread
-             * @param {String} ideaId
-             */
-            addFilterIsUnreadMessage: function () {
-                this.currentQuery.addFilter(this.currentQuery.availableFilters.POST_IS_UNREAD, true);
-                this.render();
-            },
 
             openTargetInModal: function (evt) {
                 return Ctx.openTargetInModal(evt);
             },
+
+            onSetViewStyle: function(viewStyle) {
+              //console.log("messageList::onSetViewStyle()");
+              this.setViewStyle(viewStyle);
+              this.render();
+            },
+
 
             /**
              * @event
@@ -1687,7 +1686,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                         //Only threaded view makes sence for annonymous users
                         viewStyle = this.ViewStyles.THREADED;
                     }
-                    else if ((viewStyle != this.ViewStyles.NEW_MESSAGES) && (viewStyle != this.ViewStyles.THREADED)) {
+                    else if ((viewStyle != this.ViewStyles.NEW_MESSAGES) && (viewStyle != this.ViewStyles.REVERSE_CHRONOLOGICAL)) {//THREADED used to be allowed
                         //New messages is default view
                         viewStyle = this.ViewStyles.NEW_MESSAGES;
                     }
@@ -1719,37 +1718,6 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
 
             },
 
-            /**
-             * @event
-             */
-            onMessageListViewStyle: function (e) {
-                var messageListViewStyleClass,
-                    messageListViewStyleSelected,
-                    classes = $(e.currentTarget).attr('class').split(" ");
-                messageListViewStyleClass = _.find(classes, function (cls) {
-                    return cls.indexOf(MESSAGE_LIST_VIEW_STYLES_CLASS_PREFIX) === 0;
-                });
-                var messageListViewStyleSelected = this.getMessageListViewStyleDefByCssClass(messageListViewStyleClass);
-                this.setViewStyle(messageListViewStyleSelected);
-                this.render();
-            },
-
-
-            /**
-             * @event
-             */
-            onDefaultMessageViewStyle: function (e) {
-                var classes = $(e.currentTarget).attr('class').split(" "),
-                    defaultMessageListViewStyleClass;
-                defaultMessageListViewStyleClass = _.find(classes, function (cls) {
-                    return cls.indexOf(DEFAULT_MESSAGE_VIEW_LI_ID_PREFIX) === 0;
-                });
-                var messageViewStyleSelected = this.getMessageViewStyleDefByCssClass(defaultMessageListViewStyleClass);
-                this.defaultMessageStyle = messageViewStyleSelected;
-                this.setIndividualMessageViewStyleForMessageListViewStyle(messageViewStyleSelected);
-                this.renderDefaultMessageViewDropdown();
-            },
-
             getTargetMessageViewStyleFromMessageListConfig: function (messageView) {
                 var defaultMessageStyle,
                     targetMessageViewStyle;
@@ -1774,9 +1742,14 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                     }
                 }
                 else {
-                    targetMessageViewStyle = defaultMessageStyle;
+                  targetMessageViewStyle = defaultMessageStyle;
                 }
                 return targetMessageViewStyle;
+            },
+
+            onSetIndividualMessageViewStyleForMessageListViewStyle: function(messageViewStyle) {
+                //console.log("messageList::onSetIndividualMessageViewStyleForMessageListViewStyle()");
+                this.setIndividualMessageViewStyleForMessageListViewStyle(messageViewStyle);
             },
 
             /**
@@ -1847,8 +1820,6 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                         visitorViewData: this.visitorViewData
                       }
                   );
-                  //TO REPRODUCE, USE THE SYNTHESIS SECTION IN NAVIGATION
-                  //return -1;
                 }
                 
                   messageOffset = this.getResultThreadedTraversalOrder(messageId, visitorOrderLookupTable, resultMessageIdCollection);
@@ -1862,24 +1833,46 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
             /**
              * Is the message currently onscreen (in the set of filtered messages
              * AND between the offsets onscreen.
-             * This does NOT mean it's view has already finished rendering
+             * This does NOT mean it's view has already finished rendering,
+             * nor that it's vithin the current scroll viewport
              * @param {String} id
              * @return{Boolean} true or false
              */
-            isMessageOnscreen: function (id, visitorOrderLookupTable, resultMessageIdCollection) {
-                var messageIndex = this.getMessageOffset(id, visitorOrderLookupTable, resultMessageIdCollection);
-                if (this.debugPaging) {
-                console.log("isMessageOnscreen(): ", this._offsetStart, messageIndex, this._offsetEnd)
-                }
-                if (this._offsetStart === undefined || this._offsetEnd === undefined) {
-                    return false;
-                }
-                else {
-                    return (this._offsetStart <= messageIndex) && (messageIndex <= this._offsetEnd);
-                }
+            isMessageOnscreen: function (id) {
+              //console.log("isMessageOnscreen called for ", id, "Offsets are:", this._offsetStart, this._offsetEnd)
+              if(this._offsetStart === undefined || this._offsetEnd === undefined) {
+                //console.log("The messagelist hasn't displayed any messages yet");
+                return false;
+              }
+              var messagesOnScreenIds = this.getMessageIdsToShow({
+                  'offsetStart': this._offsetStart,
+                  'offsetEnd': this._offsetEnd
+                });
+              
+              return _.contains(messagesOnScreenIds, id);
             },
 
+            /**
+             * @return:  A list of jquery selectors
+             */
+            getOnScreenMessagesSelectors: function () {
+              if(this._offsetStart === undefined || this._offsetEnd === undefined) {
+                throw new Error("The messagelist hasn't displayed any messages yet");
+              }
+              var that = this,
+                  messagesOnScreenIds = this.getMessageIdsToShow({
+                      'offsetStart': this._offsetStart,
+                      'offsetEnd': this._offsetEnd
+                    }),
+                  messagesOnScreenJquerySelectors = [];
 
+              _.each(messagesOnScreenIds, function(messageId) {
+                var selector = that.getMessageSelector(messageId);
+                messagesOnScreenJquerySelectors.push(selector);
+              });
+              return messagesOnScreenJquerySelectors;
+            },
+            
             /**
              * scrolls to any dom element in the messageList.
              * Unlike scrollToMessage, the element must already be onscreen.
@@ -1891,36 +1884,50 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * @param animate:  Should the scroll be smooth
              */
             scrollToElement: function (el, callback, margin, animate) {
-                if (this.ui.panelBody.offset() !== undefined) {
-                    var panelOffset = this.ui.panelBody.offset().top,
-                        panelScrollTop = this.ui.panelBody.scrollTop(),
-                        elOffset = el.offset().top,
-                        target;
-                    margin = margin || 30;
-                    if (animate === undefined) {
-                      animate = true;
-                    }
-                    target = elOffset - panelOffset + panelScrollTop - margin;
-                    //console.log(elOffset, panelOffset, panelScrollTop, margin, target);
-                    if(animate) {
-                      this.ui.panelBody.animate({ scrollTop: target }, { complete: callback });
-                    }
-                    else {
-                      this.ui.panelBody.scrollTop(target);
-                      if(_.isFunction(callback)) {
-                        callback();
-                      }
-                    }
+              //console.log("scrollToElement called with: ", el, callback, margin, animate);
+              //console.log("this.ui.panelBody: ", this.ui.panelBody);
+              if (el && _.isFunction(this.ui.panelBody.size) && this.ui.panelBody.offset() !== undefined) {
+                var panelOffset = this.ui.panelBody.offset().top,
+                    panelScrollTop = this.ui.panelBody.scrollTop(),
+                    elOffset = el.offset().top,
+                    target;
+                margin = margin || 30;
+                if (animate === undefined) {
+                  animate = true;
                 }
+                target = elOffset - panelOffset + panelScrollTop - margin;
+                //console.log(elOffset, panelOffset, panelScrollTop, margin, target);
+                if(animate) {
+                  this.ui.panelBody.animate({ scrollTop: target }, { complete: callback });
+                }
+                else {
+                  this.ui.panelBody.scrollTop(target);
+                  if(_.isFunction(callback)) {
+                    callback();
+                  }
+                }
+              }
             },
-
-            /** Scrools to a specific message, retrying untill relevent renders
+            
+            /** 
+             * Get a jquery selector for a specific message id
+             */
+            getMessageSelector: function (messageId) {
+              var selector = Ctx.format('[id="message-{0}"]', messageId);
+              return this.$(selector);
+            },
+            
+            /** scrolls to a specific message, retrying untill relevent renders
              * are complete
              */
             scrollToMessage: function (messageModel, shouldHighlightMessageSelected, shouldOpenMessageSelected, callback, failedCallback, recursionDepth, originalRenderId) {
               var that = this,
               MAX_RETRIES = 50, //Stop after ~30 seconds
               debug = false;
+
+              if(debug) {
+                console.log("scrollToMessage called with args:", messageModel.id, shouldHighlightMessageSelected, shouldOpenMessageSelected, callback, failedCallback, recursionDepth, originalRenderId);
+              }
 
               recursionDepth = recursionDepth || 0;
               originalRenderId = originalRenderId || _.clone(this._renderId);
@@ -1942,7 +1949,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
               }
               else if (originalRenderId !== this._renderId) {
                 //This is a normal condition now
-                //console.log("scrollToMessage():  obsolete render, aborting for ", messageModel.id);
+                //console.info("scrollToMessage():  obsolete render, aborting for ", messageModel.id);
                 //Raven.captureMessage("scrollToMessage():  obsolete render, aborting", {message_id: messageModel.id})
                 if(this._scrollToMessageInProgressId === originalRenderId) {
                   this._scrollToMessageInProgressId = false;
@@ -1956,49 +1963,43 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 this._scrollToMessageInProgressId = originalRenderId;
               }
               var animate_message = function (message) {
-                var selector = Ctx.format('[id="message-{0}"]', message.id),
-                el = $(selector);
+                var el = that.getMessageSelector(message.id);
 
                 if (el[0]) {
                   if (shouldOpenMessageSelected) {
-                    // console.log("showMessageById(): sending showBody
+                    // console.log("showMessageById(): sending openWithFullBodyView
                     // to message", message.id);
-                    //TODO:  This is horrible, we need to get the reference,
-                    // check that it's not already open,
-                    // then if it's not re-render message and wait
-                    message.trigger('showBody');
-                    setTimeout(function () {
+                    message.trigger('openWithFullBodyView');
+                    /*setTimeout(function () {
                       if(debug) {
                         console.log("scrollToMessage(): INFO:  shouldOpenMessageSelected is true, calling recursively after a delay with same recursion depth");
                       }
                       that.scrollToMessage(messageModel, shouldHighlightMessageSelected, false, callback, failedCallback, recursionDepth, originalRenderId);
-                    }, 1000); //Add a delay if we had to open the message
+                    }, 1000); //Add a delay if we had to open the message*/
                   }
-                  else {
-                    var real_callback = function () {
-                      if (shouldHighlightMessageSelected) {
-                        $(selector).highlight();
-                      }
-                      if (_.isFunction(callback)) {
-                        callback();
-                      }
-                    };
-                    that.scrollToElement(el, real_callback);
+                  var real_callback = function () {
+                    if (shouldHighlightMessageSelected) {
+                      el.highlight();
+                    }
+                    if (_.isFunction(callback)) {
+                      callback();
+                    }
                   }
+                  that.scrollToElement(el, real_callback);
                 }
                 else {
-                  // Trigerring showBody above requires the message to
+                  // Trigerring openWithFullBodyView above requires the message to
                   // re-render. We may have to give it time
                   if (recursionDepth <= MAX_RETRIES) {
                     if(debug || recursionDepth >= 2) {
                       Raven.captureMessage(
                         "scrollToMessage():  Message still not found in the DOM, calling recursively", 
                         { message_id: message.id,
-                          selector: selector,
+                          selector: el,
                           next_call_recursion_depth: recursionDepth + 1
                         }
                       );
-                      console.log("scrollToMessage():  Message " + message.id + " not found in the DOM with selector: " + selector + ", calling recursively with ", recursionDepth + 1);
+                      console.log("scrollToMessage():  Message " + message.id + " not found in the DOM with selector: ", el , ", calling recursively with ", recursionDepth + 1);
                     }
                     setTimeout(function () {
                       that.scrollToMessage(messageModel, shouldHighlightMessageSelected, shouldOpenMessageSelected, callback, failedCallback, recursionDepth + 1, originalRenderId);
@@ -2056,6 +2057,9 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 console.log("showMessageById called with args:", id, callback, shouldHighlightMessageSelected, shouldOpenMessageSelected, shouldRecurseMaxMoreTimes);
                 console.log("this.showMessageByIdInProgress:",this.showMessageByIdInProgress);
               }
+              if(!id) {
+                throw new Error("showMessageById called with an empty id");
+              }
 
               if (this.showMessageByIdInProgress === true && shouldRecurseMaxMoreTimes === undefined) {
                 Raven.context(function() {
@@ -2085,14 +2089,15 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                 return;
               }
 
-              $.when(collectionManager.getAllMessageStructureCollectionPromise(),
-                  this.currentQuery.getResultMessageIdCollectionPromise()).done(
+              Promise.join(collectionManager.getAllMessageStructureCollectionPromise(),
+                  this.currentQuery.getResultMessageIdCollectionPromise(),
+
                   function (allMessageStructureCollection, resultMessageIdCollection) {
                       var message = allMessageStructureCollection.get(id),
                           messageIsInFilter = that.isMessageIdInResults(id, resultMessageIdCollection),
                           requestedOffsets;
 
-                      if (messageIsInFilter && !that.isMessageOnscreen(id, that.visitorOrderLookupTable, resultMessageIdCollection)) {
+                      if (messageIsInFilter && !that.isMessageOnscreen(id)) {
                           if (shouldRecurse) {
                               var success = function () {
                                 if(debug) {
@@ -2101,7 +2106,7 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
                                 that.showMessageById(id, callback, shouldHighlightMessageSelected, shouldOpenMessageSelected, 0);
                               };
                               requestedOffsets = that.calculateRequestedOffsetToShowMessage(id, that.visitorOrderLookupTable, resultMessageIdCollection);
-                              that.requestMessages(requestedOffsets); //It may be that a render in progress will actually use it
+                              that.requestMessages(requestedOffsets); //It may be that a render in progress that will actually use it
                               if(debug) {
                                 console.log("showMessageById() requesting page change with requestedOffset:", requestedOffsets);
                               }
@@ -2154,17 +2159,160 @@ define(['backbone', 'raven', 'views/visitors/objectTreeRenderVisitor', 'views/me
              * @event
              */
             onFilterDeleteClick: function (ev) {
-                var value = ev.currentTarget.getAttribute('data-value');
+                var valueIndex = ev.currentTarget.getAttribute('data-value-index');
                 var filterid = ev.currentTarget.getAttribute('data-filterid');
                 var filter = this.currentQuery.getFilterDefById(filterid);
-                this.currentQuery.clearFilter(filter, value);
+                this.currentQuery.clearFilter(filter, valueIndex);
                 this.render();
             },
 
             scrollToMsgBox: function () {
                 this.scrollToElement(this.$('.messagelist-replybox'));
                 this.$('.messageSend-subject').focus();
-            }
+            },
+            
+
+            checkMessagesOnscreen: function() {
+              var that = this,
+                  messageDoms = this.getOnScreenMessagesSelectors(),
+                  currentScrolltop = this.ui.panelBody.scrollTop(),
+                  currentViewPortTop = this.ui.panelBody.offset().top,
+                  currentViewPortBottom = currentViewPortTop + this.ui.panelBody.height() - this.ui.stickyBar.height();
+              if(this.debugScrollLogging) {
+                //console.log(messageDoms);
+                //console.log("checkMessagesOnscreen(): currentScrolltop", currentScrolltop, "currentViewPortTop", currentViewPortTop, "currentViewPortBottom", currentViewPortBottom);
+              }
+
+              _.each(messageDoms, function(messageSelector) {
+                if ( !messageSelector ) {
+                  console.warn("checkMessagesOnscreen:  Received a falsy jquery selector");
+                  return;
+                }
+                if ( !messageSelector.length ) {
+                  console.warn("checkMessagesOnscreen:  For some reason the message for the following selector is no longer onscreen (aborted render?):", messageSelector);
+                  return;
+                }
+                var messageTop = messageSelector.offset().top,
+                    messageBottom = messageTop + messageSelector.height(),
+                    messageHeight = messageBottom - messageTop,
+                    heightAboveViewPort = currentViewPortTop - messageTop,
+                    heightBelowViewPort = messageBottom - currentViewPortBottom,
+                    messageWhiteSpaceRatio = (messageSelector.find(".js_messageHeader").height() + messageSelector.find(".js_messageBottomMenu").height() - 15) / messageHeight, //15px message padding bottom
+                    ratioOnscreen;
+                if (heightAboveViewPort < 0) {
+                  heightAboveViewPort = 0;
+                }
+                else if (heightAboveViewPort > messageHeight) {
+                  heightAboveViewPort = messageHeight;
+                }
+                if (heightBelowViewPort < 0) {
+                  heightBelowViewPort = 0;
+                }
+                else if (heightBelowViewPort > messageHeight) {
+                  heightBelowViewPort = messageHeight;
+                }
+                ratioOnscreen = (messageHeight - heightAboveViewPort - heightBelowViewPort) / messageHeight;
+                
+                //console.log("message heightAboveViewPort ", heightAboveViewPort, "heightBelowViewPort",heightBelowViewPort );
+                if(that.debugScrollLogging) {
+                  console.log("message % on screen: ", ratioOnscreen * 100, "messageWhiteSpaceRatio", messageWhiteSpaceRatio );
+                }
+              });
+            },
+
+            showPendingMessages: function(nbMessage){
+              this._originalDocumentTitle = document.querySelector('#discussion-topic').value;
+              document.title = ' ('+ nbMessage +') '+ this._originalDocumentTitle;
+
+              var msg = i18n.sprintf(i18n.ngettext(
+                  '%d new message has been posted.  Click here to refresh',
+                  '%d new messages have been posted.  Click here to refresh',
+                  nbMessage), nbMessage);
+              
+              if(nbMessage > 0){
+                this.ui.pendingMessage.html(msg);
+                this.ui.contentPending.removeClass('hidden').slideDown('slow');
+              }
+            },
+
+            resetPendingMessages: function(allMessageStructureCollection){
+              this._initialLenAllMessageStructureCollection = allMessageStructureCollection.length;
+              if(this._originalDocumentTitle) {
+                document.title = this._originalDocumentTitle;
+              }
+            },
+            /**
+             * @return A promise
+             */
+            loadPendingMessages: function(){
+              var that = this,
+                  collectionManager = new CollectionManager();
+              return collectionManager.getAllMessageStructureCollectionPromise()
+                .then(function (allMessageStructureCollection) {
+                  that.resetPendingMessages(allMessageStructureCollection);
+                  that.currentQuery.invalidateResults();
+                  that.render();
+                });
+            },
+
+            onReplyBoxFocus: function(){
+              this.aReplyBoxHasFocus = true;
+              this.ui.stickyBar.fadeOut();
+            },
+
+            onReplyBoxBlur: function(){
+              this.aReplyBoxHasFocus = false;
+              // commented out because it will reappear on scroll if necessary (and forcing it is bad if the user clics from a message reply box to the bottom comment box)
+              //this.ui.stickyBar.fadeIn();
+            },
+
+            /**
+             * WARNING, this is a jquery handler, not a backbone one
+             * Processes the scroll events to ultimately generate analytics
+             * @event
+             * @param ev The jquery event, with the view as ev.data
+             */
+            scrollLogger: _.debounce(function (ev) {
+              var that = ev.data,
+              //alert("scroll");
+              CURRENT_FONT_SIZE_PX = 13,
+              //Approximate using messagelist width - 2 * (messageList padding + messageFamily padding, messageFamily margin, message margin.
+              //This is only a good estimation for flat viewss
+              averageMessageWidth = that.ui.messageList.width() - 2 * (20 + 6 + 6 + 10),
+              //Character per line:  normally between 45 to 75, 66 is considered ideal.
+              //Average character per line = div width / font size in px*0.4
+              CURRENT_CHARACTERS_PER_LINE = averageMessageWidth / (CURRENT_FONT_SIZE_PX*0.4),
+              //(gotcha:  ideally substract non-character size of message, but still count header)
+              ESTIMATED_LINE_HEIGHT = 1.5 * CURRENT_FONT_SIZE_PX,
+              //Character per word: 5.1 average for english language + 1 space => multipy WPM*5 to get CPM
+              LINE_CARACTERS_PER_WORD = 5.1 + 1,
+              WORDS_PER_LINE = CURRENT_CHARACTERS_PER_LINE / LINE_CARACTERS_PER_WORD,
+              currentScrolltop = that.ui.panelBody.scrollTop(),
+              d = new Date(),
+              currentTimeStamp = d.getTime(),
+              distance = currentScrolltop - that.scrollLoggerPreviousScrolltop,
+              elapsedMilliseconds = currentTimeStamp - that.scrollLoggerPreviousTimestamp,
+              scrollLines = distance / ESTIMATED_LINE_HEIGHT,
+              scrollLinesPerMinute = scrollLines / elapsedMilliseconds*1000*60,
+              scrollWordsPerMinute = scrollLinesPerMinute * WORDS_PER_LINE;
+
+              if(that.debugScrollLogging) {
+                /*console.log("CURRENT_FONT_SIZE_PX", CURRENT_FONT_SIZE_PX);
+                console.log("averageMessageWidth", averageMessageWidth);
+                console.log("CURRENT_CHARACTERS_PER_LINE", CURRENT_CHARACTERS_PER_LINE);
+                console.log("ESTIMATED_LINE_HEIGHT", ESTIMATED_LINE_HEIGHT);
+                console.log("LINE_CARACTERS_PER_WORD", LINE_CARACTERS_PER_WORD);
+                console.log("WORDS_PER_LINE", WORDS_PER_LINE);
+                console.log("CURRENT_FONT_SIZE_PX", CURRENT_FONT_SIZE_PX);
+                console.log("scrollLines", scrollLines);
+                console.log("scrollLinesPerMinute", scrollLinesPerMinute);
+*/
+                console.log("Distance: ",distance, "px, scrollWordsPerMinute: ", scrollWordsPerMinute);
+              }
+              that.scrollLoggerPreviousScrolltop = currentScrolltop;
+              that.scrollLoggerPreviousTimestamp = currentTimeStamp;
+              that.checkMessagesOnscreen();
+            }, 1000)
 
         });
 

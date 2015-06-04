@@ -1,25 +1,26 @@
 'use strict';
 
-define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/segment', 'utils/types', 'utils/i18n', 'utils/permissions', 'common/collectionManager', 'utils/panelSpecTypes', 'views/assemblPanel', 'backbone.subset'],
-    function (Backbone, _, $, Assembl, Ctx, Segment, Types, i18n, Permissions, CollectionManager, PanelSpecTypes, AssemblPanel) {
+define(['backbone.marionette','backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/segment', 'utils/types', 'utils/i18n', 'utils/permissions', 'common/collectionManager', 'utils/panelSpecTypes', 'views/assemblPanel', 'backbone.subset', 'bluebird'],
+    function (Marionette, Backbone, _, $, Assembl, Ctx, Segment, Types, i18n, Permissions, CollectionManager, PanelSpecTypes, AssemblPanel, Subset, Promise) {
 
         var SegmentView = Marionette.ItemView.extend({
             template: '#tmpl-segment',
             gridSize: AssemblPanel.prototype.CLIPBOARD_GRID_SIZE,
-            events: {
-                'dragstart .postit': "onDragStart",
-                //'drop': 'onDrop', // bubble up?
-                'click .js_closeExtract': 'onCloseButtonClick',
-                'click .segment-link': "onSegmentLinkClick",
-                'click .js_selectAsNugget': 'selectAsNugget'
-            },
             ui: {
-                'body': '.postit-footer .text-quotation'
+                postItFooter: '.postit-footer .text-quotation',
+                postIt: '.postit'
             },
             initialize: function (options) {
                 this.allUsersCollection = options.allUsersCollection;
                 this.allMessagesCollection = options.allMessagesCollection;
                 this.closeDeletes = options.closeDeletes;
+            },
+
+            events: {
+                'click .js_closeExtract': 'onCloseButtonClick',
+                'click .segment-link': "onSegmentLinkClick",
+                'click .js_selectAsNugget': 'selectAsNugget',
+                'dragstart .bx.postit': 'onDragStart'
             },
 
             serializeData: function () {
@@ -29,13 +30,15 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                     currentUser = Ctx.getCurrentUser(),
                     harvester = this.model.getCreatorFromUsersCollection(this.allUsersCollection);
 
+                if(!harvester) {
+                  throw new Error("No harvester found in segment");
+                }
                 if (idPost) {
                     post = this.allMessagesCollection.get(idPost);
                     if (post) {
                         postCreator = this.allUsersCollection.get(post.get('idCreator'));
                     }
                 }
-
                 return {
                     segment: this.model,
                     post: post,
@@ -51,7 +54,7 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
 
             onRender: function () {
                 Ctx.initTooltips(this.$el);
-                Ctx.convertUrlsToLinks(this.ui.body);
+                Ctx.convertUrlsToLinks(this.ui.postItFooter);
             },
 
             onDragStart: function (ev) {
@@ -61,15 +64,15 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                     segment = this.model.collection.get(cid);
 
                 Ctx.showDragbox(ev, segment.getQuote());
-                Ctx.draggedSegment = segment;
+                Ctx.setDraggedSegment(segment);
             },
 
             onSegmentLinkClick: function (ev) {
                 var cid = ev.currentTarget.getAttribute('data-segmentid'),
                     collectionManager = new CollectionManager();
 
-                collectionManager.getAllExtractsCollectionPromise().done(
-                    function (allExtractsCollection) {
+                collectionManager.getAllExtractsCollectionPromise()
+                    .then(function (allExtractsCollection) {
                         var segment = allExtractsCollection.get(cid);
                         Ctx.showTargetBySegment(segment);
                     });
@@ -175,8 +178,12 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
             minWidth: 270,
 
             ui: {
-                body: ".panel-body",
-                clipboardCount: ".clipboardCount"
+                panelBody:'.panel-body',
+                clipboardCount: ".clipboardCount",
+                postIt: '.postitlist',
+                clearSegmentList:'#segmentList-clear',
+                closeButton:'#segmentList-closeButton',
+                bookmark:'.js_bookmark'
             },
             regions: {
                 extractList: '.postitlist'
@@ -187,8 +194,8 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                 var that = this,
                     collectionManager = new CollectionManager();
 
-                $.when(collectionManager.getAllExtractsCollectionPromise()).then(
-                    function (allExtractsCollection) {
+                collectionManager.getAllExtractsCollectionPromise()
+                    .then(function (allExtractsCollection) {
                         that.clipboard = new Clipboard([], {
                             parent: allExtractsCollection,
                             currentUserId: Ctx.getCurrentUser().id
@@ -212,13 +219,16 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
             },
 
             events: {
-                'dragend .postit': "onDragEnd",
-                'dragover': 'onDragOver',
-                'dragleave': 'onDragLeave',
-                'drop': 'onDrop',
-                'click #segmentList-clear': "onClearButtonClick",
-                'click #segmentList-closeButton': "closePanel",
-                'click .js_bookmark': 'onBookmark'
+                'dragstart @ui.postIt': 'onDragStart',
+                'dragend @ui.postIt': "onDragEnd",
+
+                'dragover @ui.panelBody': 'onDragOver',
+                'dragleave @ui.panelBody': 'onDragLeave',
+                'drop @ui.panelBody': 'onDrop',
+
+                'click @ui.clearSegmentList': "onClearButtonClick",
+                'click @ui.closeButton': "closePanel",
+                'click @ui.bookmark': 'onBookmark'
             },
 
             getTitle: function () {
@@ -243,17 +253,20 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                 }
                 if (this.clipboard) {
                     Ctx.initTooltips(this.$el);
-                    $.when(collectionManager.getAllExtractsCollectionPromise(),
-                        collectionManager.getAllUsersCollectionPromise(),
-                        collectionManager.getAllMessageStructureCollectionPromise()
-                    ).then(
+
+                    Promise.join(collectionManager.getAllExtractsCollectionPromise(),
+                                 collectionManager.getAllUsersCollectionPromise(),
+                                 collectionManager.getAllMessageStructureCollectionPromise(),
                         function (allExtractsCollection, allUsersCollection, allMessagesCollection) {
-                            that.extractList.show(new SegmentListView({
+
+                            var segmentListView = new SegmentListView({
                                 collection: that.clipboard,
                                 allUsersCollection: allUsersCollection,
                                 allMessagesCollection: allMessagesCollection,
                                 closeDeletes: true
-                            }));
+                            });
+
+                            that.getRegion('extractList').show(segmentListView);
                         });
                 }
                 this.resetTitle();
@@ -276,11 +289,10 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
              * @param {Segment} segment
              */
             addSegment: function (segment) {
-                var that = this,
-                    collectionManager = new CollectionManager();
+                var collectionManager = new CollectionManager();
 
-                collectionManager.getAllExtractsCollectionPromise().done(
-                    function (allExtractsCollection) {
+                collectionManager.getAllExtractsCollectionPromise()
+                    .then(function (allExtractsCollection) {
                         delete segment.attributes.highlights;
 
                         allExtractsCollection.add(segment, {merge: true});
@@ -357,19 +369,30 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                     ev.stopPropagation();
                 }
 
-                ev.currentTarget.style.opacity = '';
-                Ctx.draggedSegment = null;
+                ev.currentTarget.style.opacity = 1;
+                Ctx.setDraggedSegment(null);
+                this.$el.removeClass('is-dragover');
+                ev.preventDefault();
             },
 
             onDragOver: function (ev) {
-                ev.preventDefault();
+                if (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
+
+                if (ev.originalEvent) {
+                    ev = ev.originalEvent;
+                }
+
+                ev.dataTransfer.dropEffect = 'all';
 
                 var isText = false;
-                if (ev.dataTransfer && ev.dataTransfer.types && ev.dataTransfer.types.indexOf('text/plain') > -1) {
+                if (ev.dataTransfer && ev.dataTransfer.types && _.indexOf(ev.dataTransfer.types, "text/plain") > -1) {
                     isText = Ctx.draggedIdea ? false : true;
                 }
 
-                if (Ctx.draggedSegment !== null || isText) {
+                if (Ctx.getDraggedSegment() !== null || isText) {
                     this.$el.addClass("is-dragover");
                 }
 
@@ -378,7 +401,11 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                 }
             },
 
-            onDragLeave: function () {
+            onDragLeave: function (ev) {
+                if (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
                 this.$el.removeClass('is-dragover');
             },
 
@@ -388,7 +415,7 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                     ev.stopPropagation();
                 }
 
-                this.$el.trigger('dragleave');
+                this.$el.removeClass('is-dragover');
 
                 var idea = Ctx.popDraggedIdea();
                 if (idea) {
@@ -398,20 +425,22 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                 var segment = Ctx.getDraggedSegment();
                 if (segment) {
                     this.addSegment(segment);
-                    return;
+                    Ctx.setDraggedSegment(null);
                 }
 
                 var annotation = Ctx.getDraggedAnnotation();
                 if (annotation) {
                     Ctx.saveCurrentAnnotationAsExtract();
-                    return;
                 }
 
-                var text = ev.dataTransfer.getData("Text");
+                //the segments is already created
+                /*var text = ev.dataTransfer.getData("Text");
                 if (text) {
                     this.addTextAsSegment(text);
-                    return;
-                }
+                }*/
+
+                this.render();
+                return;
             },
 
             onClearButtonClick: function (ev) {
@@ -421,8 +450,8 @@ define(['backbone', 'underscore', 'jquery', 'app', 'common/context', 'models/seg
                     user_id = Ctx.getCurrentUser().id;
 
                 if (ok) {
-                    collectionManager.getAllExtractsCollectionPromise().done(
-                        function (allExtractsCollection) {
+                    collectionManager.getAllExtractsCollectionPromise()
+                        .done(function() {
                             that.clipboard.filter(function (s) {
                                 return s.get('idCreator') == user_id
                             }).map(function (segment) {

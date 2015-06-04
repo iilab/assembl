@@ -1,5 +1,7 @@
 from datetime import datetime
 import simplejson as json
+from urllib import quote
+from smtplib import SMTPRecipientsRefused
 
 from pyramid.i18n import TranslationStringFactory
 from pyramid.view import view_config
@@ -25,16 +27,16 @@ from pyisemail import is_email
 from assembl.models import (
     EmailAccount, IdentityProvider, IdentityProviderAccount,
     AgentProfile, User, Username, Role, LocalUserRole,
-    AbstractAgentAccount, Discussion)
+    AbstractAgentAccount, Discussion, AgentStatusInDiscussion)
 from assembl.auth import (
     P_READ, R_PARTICIPANT)
 from assembl.auth.password import (
-    format_token, verify_email_token, verify_password_change_token,
+    verify_email_token, verify_password_change_token,
     password_token)
 from assembl.auth.util import (
     get_identity_provider, discussion_from_request)
 from ...lib import config
-from .. import get_default_context
+from .. import get_default_context, JSONError
 
 _ = TranslationStringFactory('assembl')
 
@@ -108,7 +110,7 @@ def maybe_contextual_route(request, route_name, **args):
 )
 def logout(request):
     forget(request)
-    next_view = handle_next_view(request, True)
+    next_view = handle_next_view(request)
     return HTTPFound(location=next_view)
 
 
@@ -129,7 +131,7 @@ def login_view(request):
 def get_profile(request):
     id_type = request.matchdict.get('type').strip()
     identifier = request.matchdict.get('identifier').strip()
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     if id_type == 'u':
         username = session.query(Username).filter_by(
             username=identifier).first()
@@ -164,7 +166,7 @@ def get_profile(request):
 
 @view_config(route_name='profile_user')
 def assembl_profile(request):
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     localizer = request.localizer
     profile = get_profile(request)
     id_type = request.matchdict.get('type').strip()
@@ -277,10 +279,13 @@ def assembl_register_view(request):
     p_slug = "/" + slug if slug else ""
     next_view = handle_next_view(request)
     if not request.params.get('email'):
-        return dict(get_default_context(request),
+        response = dict(get_default_context(request),
                     slug_prefix=p_slug)
+        if request.GET.get('error', None):
+            response['error'] = request.GET['error']
+        return response
     forget(request)
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     localizer = request.localizer
     name = request.params.get('name', '').strip()
     password = request.params.get('password', '').strip()
@@ -313,7 +318,7 @@ def assembl_register_view(request):
         name=name,
         password=password,
         verified=not validate_registration,
-        creation_date=datetime.now()
+        creation_date=datetime.utcnow()
     )
     email_account = EmailAccount(
         email=email,
@@ -322,6 +327,13 @@ def assembl_register_view(request):
     )
     session.add(user)
     session.add(email_account)
+    discussion = discussion_from_request(request)
+    if discussion:
+        now = datetime.utcnow()
+        agent_status = AgentStatusInDiscussion(
+            agent_profile=user, discussion=discussion,
+            user_created_on_this_discussion=True)
+        session.add(agent_status)
     session.flush()
     if not validate_registration:
         if asbool(config.get('pyramid.debug_authorization')):
@@ -329,7 +341,7 @@ def assembl_register_view(request):
             from assembl.auth.password import email_token
             print "email token:", request.route_url(
                 'user_confirm_email', ticket=email_token(email_account))
-        headers = remember(request, user.id, tokens=format_token(user))
+        headers = remember(request, user.id)
         request.response.headerlist.extend(headers)
         # TODO: Tell them to expect an email.
         request.session.pop('next_view')
@@ -338,8 +350,23 @@ def assembl_register_view(request):
         request, 'confirm_emailid_sent', email_account_id=email_account.id))
 
 
+@view_config(context=SMTPRecipientsRefused)
+def smtp_error_view(exc, request):
+    path_info = request.environ['PATH_INFO']
+    localizer = request.localizer
+    message = localizer.translate(_(
+            "Your email was refused by the SMTP server.  You probably entered an email that does not exist."))
+    if path_info.startswith('/data/') or path_info.startswith('/api/'):
+        return JSONError(400, message)
+    referrer = request.environ['HTTP_REFERER']
+    if '?' in referrer:
+        referrer = referrer.split('?')[0]
+    referrer += '?error='+quote(message)
+    return HTTPFound(location=referrer)
+
+
 def from_identifier(identifier):
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     if '@' in identifier:
         account = session.query(AbstractAgentAccount).filter_by(
             email=identifier).order_by(AbstractAgentAccount.verified.desc()).first()
@@ -368,7 +395,7 @@ def from_identifier(identifier):
 )
 def assembl_login_complete_view(request):
     # Check if proper authorization. Otherwise send to another page.
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     identifier = request.params.get('identifier', '').strip()
     password = request.params.get('password', '').strip()
     next_view = handle_next_view(
@@ -399,8 +426,9 @@ def assembl_login_complete_view(request):
         session.add(user)
         return dict(get_login_context(request),
                     error=localizer.translate(_("Invalid user and password")))
-    headers = remember(request, user.id, tokens=format_token(user))
+    headers = remember(request, user.id)
     request.response.headerlist.extend(headers)
+    discussion = discussion_from_request(request)
     return HTTPFound(location=next_view)
 
 
@@ -408,7 +436,7 @@ def assembl_login_complete_view(request):
     context='velruse.AuthenticationComplete'
 )
 def velruse_login_complete_view(request):
-    session = AgentProfile.db
+    session = AgentProfile.default_db
     context = request.context
     velruse_profile = context.profile
     discussion = None
@@ -495,7 +523,7 @@ def velruse_login_complete_view(request):
         if isinstance(profile, User):
             if profile.username:
                 username = profile.username.username
-            profile.last_login = datetime.now()
+            profile.last_login = datetime.utcnow()
             if not profile.name:
                 profile.name = velruse_profile.get('displayName', None)
     else:
@@ -503,8 +531,8 @@ def velruse_login_complete_view(request):
         profile = User(
             name=velruse_profile.get('displayName', ''),
             verified=True,
-            last_login=datetime.now(),
-            creation_date=datetime.now(),
+            last_login=datetime.utcnow(),
+            creation_date=datetime.utcnow(),
             #timezone=velruse_profile['utcOffset'],   # TODO: needs parsing
         )
 
@@ -517,6 +545,12 @@ def velruse_login_complete_view(request):
                 break
         if username:
             session.add(Username(username=username, user=profile))
+        if discussion:
+            now = datetime.utcnow()
+            agent_status = AgentStatusInDiscussion(
+                agent_profile=profile, discussion=discussion,
+                user_created_on_this_discussion=True)
+            session.add(agent_status)
         session.flush()
         if maybe_auto_subscribe(profile, discussion):
             next_view = "/%s/" % (slug,)
@@ -554,7 +588,7 @@ def velruse_login_complete_view(request):
     session.flush()
 
     user_id = profile.id
-    headers = remember(request, user_id, tokens=format_token(profile))
+    headers = remember(request, user_id)
     request.response.headerlist.extend(headers)
     # TODO: Store the OAuth etc. credentials.
     # Though that may be done by velruse?
@@ -592,8 +626,8 @@ def confirm_emailid_sent(request):
         email_account_id=request.matchdict.get('email_account_id'),
         title=localizer.translate(_('Confirmation requested')),
         description=localizer.translate(_(
-            'We have sent you a confirmation email. '
-            'Please use the link to confirm your email to Assembl')))
+            'A confirmation e-mail has been sent to your account and should be in your inbox in a few minutes. '
+            'Please follow the confirmation link in order to confirm your email')))
 
 
 def maybe_auto_subscribe(user, discussion):
@@ -601,11 +635,11 @@ def maybe_auto_subscribe(user, discussion):
             or not discussion.subscribe_to_notifications_on_signup):
         return False
     # really auto-subscribe user
-    role = User.db.query(Role).filter_by(name=R_PARTICIPANT).first()
-    User.db.add(LocalUserRole(
+    role = discussion.db.query(Role).filter_by(name=R_PARTICIPANT).first()
+    discussion.db.add(LocalUserRole(
         user_id=user.id, role=role,
         discussion_id=discussion.id))
-    User.db.flush()
+    discussion.db.flush()
     # apply new notifications
     user.get_notification_subscriptions(discussion.id)
     return True
@@ -624,7 +658,7 @@ def maybe_auto_subscribe(user, discussion):
 def user_confirm_email(request):
     token = request.matchdict.get('ticket')
     email = verify_email_token(token)
-    session = AbstractAgentAccount.db
+    session = AbstractAgentAccount.default_db
     # TODO: token expiry
     localizer = request.localizer
     if not email:
@@ -643,7 +677,7 @@ def user_confirm_email(request):
     next_view = handle_next_view(request, False)
 
     if email.verified:
-        raise HTTPFound(location=maybe_contextual_route(
+        return HTTPFound(location=maybe_contextual_route(
             request, 'login', _query=dict(message=localizer.translate(
                 _("Email <%s> already confirmed")) % (email.email,))))
     else:
@@ -725,8 +759,8 @@ def confirm_email_sent(request):
     email = request.matchdict.get('email')
     if not email:
         raise HTTPNotFound()
-    email_objects = AbstractAgentAccount.db.query(AbstractAgentAccount).filter_by(
-        email=email)
+    email_objects = AbstractAgentAccount.default_db.query(
+        AbstractAgentAccount).filter_by(email=email)
     verified_emails = [e for e in email_objects if e.verified]
     unverified_emails = [e for e in email_objects if not e.verified]
     if len(verified_emails) > 1:
@@ -752,8 +786,8 @@ def confirm_email_sent(request):
                 email=email,
                 title=localizer.translate(_('Confirmation requested')),
                 description=localizer.translate(_(
-                    'We have sent you a confirmation email. '
-                    'Please use the link to confirm your email to Assembl')))
+                    'A confirmation e-mail has been sent to your account and should be in your inbox in a few minutes. '
+                    'Please follow the confirmation link in order to confirm your email')))
         else:
             # We do not have an email to this name.
             return HTTPFound(location=maybe_contextual_route(
@@ -853,9 +887,9 @@ def do_password_change(request):
                         "This token is expired. "
                         "Do you want us to send another?")))))
     user = User.get(user_id)
-    headers = remember(request, user_id, tokens=format_token(user))
+    headers = remember(request, user_id)
     request.response.headerlist.extend(headers)
-    user.last_login = datetime.now()
+    user.last_login = datetime.utcnow()
     slug = request.matchdict.get('discussion_slug', None)
     slug_prefix = "/" + slug if slug else ""
     return dict(
@@ -907,6 +941,30 @@ def send_confirmation_email(request, email):
     confirm_what = _('email')
     if isinstance(email.profile, User) and not email.profile.verified:
         confirm_what = _('account')
+        text_message = _(u"""Hello, ${name}, and welcome to ${assembl}!
+
+Please confirm your email address &lt;${email}&gt; and complete your registration by clicking the link below.
+<${confirm_url}>
+
+Best regards,
+The ${assembl} Team""")
+        html_message = _(u"""<p>Hello, ${name}, and welcome to ${assembl}!</p>
+<p>Please <a href="${confirm_url}">click here to confirm your email address</a>
+&lt;${email}&gt; and complete your registration.</p>
+<p>Best regards,<br />The ${assembl} Team</p>""")
+    else:
+        text_message = _(u"""Hello, ${name}!
+
+Please confirm your new email address <${email}> on your ${assembl} account by clicking the link below.
+<${confirm_url}>
+
+Best regards,
+The ${assembl} Team""")
+        html_message = _(u"""<p>Hello, ${name}!</p>
+<p>Please <a href="${confirm_url}">click here to confirm your new email address</a>
+&lt;${email}&gt; on your ${assembl} account.</p>
+<p>Best regards,<br />The ${assembl} Team</p>""")
+
     from assembl.auth.password import email_token
     data = {
         'name': email.profile.name,
@@ -918,16 +976,11 @@ def send_confirmation_email(request, email):
             ticket=email_token(email))
     }
     message = Message(
-        subject=localizer.translate(_("Please confirm your ${confirm_what} with <${assembl}>"), mapping=data),
+        subject=localizer.translate(_("Please confirm your ${confirm_what} with ${assembl}"), mapping=data),
         sender=config.get('assembl.admin_email'),
         recipients=["%s <%s>" % (email.profile.name, email.email)],
-        body=localizer.translate(_(u"""Hello, ${name}!
-Please confirm your ${confirm_what} <${email}> with ${assembl} by clicking on the link below.
-<${confirm_url}>
-"""), mapping=data),
-        html=localizer.translate(_(u"""<p>Hello, ${name}!</p>
-<p>Please <a href="${confirm_url}">confirm your ${confirm_what}</a> &lt;${email}&gt; with <${assembl}>.</p>
-"""), mapping=data))
+        body=localizer.translate(_(text_message), mapping=data),
+        html=localizer.translate(_(html_message), mapping=data))
     #if deferred:
     #    mailer.send_to_queue(message)
     #else:
@@ -950,12 +1003,20 @@ def send_change_password_email(
         recipients=["%s <%s>" % (
             profile.name, email or profile.get_preferred_email())],
         body=localizer.translate(_(u"""Hello, ${name}!
-You asked to change your password on <${assembl}>. (We hope it was you!)\n
-You can do this by clicking on the link below.
+We have received a request to change the password on your ${assembl} account.
+To confirm your password change please click on the link below.
 <${confirm_url}>
+
+If you did not ask to reset your password please disregard this email.
+
+Best regards,
+The ${assembl} Team
 """), mapping=data),
         html=localizer.translate(_(u"""<p>Hello, ${name}!</p>
-<p>You asked to <a href="${confirm_url}">change your password</a> on ${assembl} (We hope it was you!)</p>
+<p>We have received a request to change the password on your ${assembl} account.
+Please <a href="${confirm_url}">click here to confirm your password change</a>.</p>
+<p>If you did not ask to reset your password please disregard this email.</p>
+<p>Best regards,<br />The ${assembl} Team</p>
 """), mapping=data))
     # if deferred:
     #    mailer.send_to_queue(message)

@@ -12,12 +12,9 @@ define(['ckeditor', 'common/context', 'views/message', 'models/synthesis', 'view
              * @init
              */
             initialize: function (obj) {
-                var that = this,
-                    collectionManager = new CollectionManager();
                 MessageView.prototype.initialize.apply(this, arguments);
                 this.stopListening(this.messageListView, 'annotator:initComplete', this.onAnnotatorInitComplete);
                 this.synthesisId = this.model.get('publishes_synthesis');
-                this.allSynthesisCollectionPromise = collectionManager.getAllSynthesisCollectionPromise()
             },
 
             /**
@@ -43,38 +40,38 @@ define(['ckeditor', 'common/context', 'views/message', 'models/synthesis', 'view
              * @type {}
              */
             postRender: function () {
-                var that = this,
-                    body;
-                this.allSynthesisCollectionPromise.done(
-                    function (allSynthesisCollection) {
-                        var synthesis = allSynthesisCollection.get(that.synthesisId);
-                        if (!synthesis) {
-                            // TODO
-                            console.log("BUG: Could not get synthesis after post. Maybe too early.")
-                            return;
-                        }
-                        that.$('.message-subject').html(synthesis.get('subject'));
-                        that.synthesisPanel = new SynthesisPanel({
-                            model: synthesis,
-                            messageListView: that.messageListView,
-                            panelWrapper: that.messageListView.getPanelWrapper()
-                        });
-                        that.synthesisPanel.template = Ctx.loadTemplate('synthesisPanelMessage');
-                        that.synthesisPanel.render();
-                        if (that.viewStyle == that.availableMessageViewStyles.PREVIEW) {
-                            //Strip HTML from preview
-                            //bodyFormat = "text/plain";
-                            body = $(that.synthesisPanel.el).text();
-                            that.$('.message-body > div').prepend(body);
-                        }
-                        else {
-                            body = that.synthesisPanel.el;
-                            that.$('.message-body').html(body);
-                        }
+              var that = this,
+                  body,
+                  collectionManager = new CollectionManager();
 
+              collectionManager.getAllSynthesisCollectionPromise()
+                .then(function (allSynthesisCollection) {
+                  var synthesis = allSynthesisCollection.get(that.synthesisId);
+                  if (!synthesis) {
+                    throw Error("BUG: Could not get synthesis after post. Maybe too early.")
+                  }
+                  that.$('.message-subject').html(synthesis.get('subject'));
+                  if (that.viewStyle == that.availableMessageViewStyles.PREVIEW) {
+                    //Strip HTML from preview
+                    //bodyFormat = "text/plain";
+                  
+                    body = MessageView.prototype.generateBodyPreview(synthesis.get('introduction'));
+                    that.$('.message-body > p').empty().html(body);
+                  }
+                  else {
+                    that.synthesisPanel = new SynthesisPanel({
+                      model: synthesis,
+                      messageListView: that.messageListView,
+                      panelWrapper: that.messageListView.getPanelWrapper(),
+                      el: that.$('.message-body')
                     });
+                    that.synthesisPanel.template = Ctx.loadTemplate('synthesisPanelMessage');
+                    that.synthesisPanel.render();
+                  }
+                });
+              this.$(".message-body").removeClass('js_messageBodyAnnotatorSelectionAllowed');
 
-                return;
+              return;
             }
 
         });

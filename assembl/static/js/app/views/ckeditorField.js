@@ -17,7 +17,9 @@ define(['backbone.marionette', 'app' , 'underscore', 'common/context', 'ckeditor
                 ],
                 extraPlugins: 'sharedspace',
                 removePlugins: 'floatingspace,resize',
-                sharedSpaces: { top: 'ckeditor-toptoolbar', bottom: 'ckeditor-bottomtoolbar' }
+                sharedSpaces: { top: 'ckeditor-toptoolbar', bottom: 'ckeditor-bottomtoolbar' },
+                disableNativeSpellChecker: false,
+                title: false //Removes the annoying tooltip in the middle of the main textarea
             },
 
             ckInstance: null,
@@ -25,25 +27,30 @@ define(['backbone.marionette', 'app' , 'underscore', 'common/context', 'ckeditor
             showPlaceholderOnEditIfEmpty: false,
 
             initialize: function (options) {
+
+                if (this.model === null) {
+                    throw new Error('EditableField needs a model');
+                }
+
                 this.view = this;
 
                 this.topId = _.uniqueId('ckeditorField-topid');
                 this.fieldId = _.uniqueId('ckeditorField');
                 this.bottomId = _.uniqueId('ckeditorField-bottomid');
 
-                (this.editing) ? this.editing = true : this.editing = false;
+                this.autosave = (options.autosave) ? options.autosave : false;
 
-                (_.has(options, 'modelProp')) ? this.modelProp = options.modelProp : this.modelProp = null;
+                this.hideButton = (options.hideButton) ? options.hideButton : false;
 
-                (_.has(options, 'placeholder')) ? this.placeholder = options.placeholder : this.placeholder = null;
+                this.editing = (this.editing) ? true : false;
 
-                (_.has(options, 'showPlaceholderOnEditIfEmpty')) ? this.showPlaceholderOnEditIfEmpty = options.showPlaceholderOnEditIfEmpty : this.showPlaceholderOnEditIfEmpty = null;
+                this.modelProp = (options.modelProp) ? options.modelProp : null;
 
-                (_.has(options, 'canEdit')) ? this.canEdit = options.canEdit : this.canEdit = true;
+                this.placeholder = (options.placeholder) ? options.placeholder : null;
 
-                if (this.model === null) {
-                    throw new Error('EditableField needs a model');
-                }
+                this.showPlaceholderOnEditIfEmpty = (options.showPlaceholderOnEditIfEmpty) ? options.showPlaceholderOnEditIfEmpty : null;
+
+                this.canEdit = (options.canEdit) ? options.canEdit : true;
 
                 this.listenTo(this.view, 'cKEditorField:render', this.render);
             },
@@ -61,14 +68,7 @@ define(['backbone.marionette', 'app' , 'underscore', 'common/context', 'ckeditor
             },
 
             serializeData: function () {
-                var textToShow = null;
-
-                if (this.showPlaceholderOnEditIfEmpty) {
-                    textToShow = this.placeholder;
-                }
-                else {
-                    textToShow = this.model.get(this.modelProp);
-                }
+                var textToShow = (this.showPlaceholderOnEditIfEmpty) ? this.placeholder : this.model.get(this.modelProp);
 
                 return {
                     topId: this.topId,
@@ -77,7 +77,8 @@ define(['backbone.marionette', 'app' , 'underscore', 'common/context', 'ckeditor
                     text: textToShow,
                     editing: this.editing,
                     canEdit: this.canEdit,
-                    placeholder: this.placeholder
+                    placeholder: this.placeholder,
+                    hideButton: this.hideButton
                 }
             },
 
@@ -93,39 +94,38 @@ define(['backbone.marionette', 'app' , 'underscore', 'common/context', 'ckeditor
              */
             startEditing: function () {
                 var editingArea = this.$('#' + this.fieldId).get(0);
+                var that = this;
 
                 var config = _.extend({}, this.CKEDITOR_CONFIG, {
                     sharedSpaces: { top: this.topId, bottom: this.bottomId }
                 });
 
                 this.ckInstance = ckeditor.inline(editingArea, config);
-                window.setTimeout(function () {
+
+                setTimeout(function () {
                     editingArea.focus();
                 }, 100);
-                /*
-                 We do not enable save on blur, because:
-                 - we have a Save and a Cancel button
-                 - the save on blur feature until now was called even when the user clicked on Save or Cancel button, so the content was saved anyway and the buttons were useless
-                 - an editor may blur by mistake (which saves new content) but maybe he wanted to revert his changes afterwards
 
-                 this.ckInstance.element.on('blur', function () {
+                if(this.autosave){
 
-                 // Firefox triggers the blur event if we paste (ctrl+v)
-                 // in the ckeditor, so instead of calling the function directly
-                 // we wait to see if the focus is still in the ckeditor
-                 setTimeout(function () {
-                 if (!that.ckInstance.element) {
-                 return;
-                 }
+                    this.ckInstance.element.on('blur', function () {
+                         /**
+                         * Firefox triggers the blur event if we paste (ctrl+v)
+                         * in the ckeditor, so instead of calling the function directly
+                         * we wait to see if the focus is still in the ckeditor
+                         */
+                         setTimeout(function () {
 
-                 var hasFocus = $(that.ckInstance.element).is(":focus");
-                 if (!hasFocus) {
-                 that.saveEdition();
-                 }
-                 }, 100);
+                             if (!that.ckInstance.element) return;
 
-                 });
-                 */
+                             var hasFocus = $(that.ckInstance.element).is(":focus");
+
+                             if (!hasFocus) that.saveEdition();
+
+                         }, 100);
+
+                     });
+                }
             },
 
             /**
@@ -143,11 +143,6 @@ define(['backbone.marionette', 'app' , 'underscore', 'common/context', 'ckeditor
              * Destroy the ckeditor instance
              */
             destroy: function () {
-                //FIXME: need this ?
-                /*if (this.ckInstance) {
-                 this.ckInstance.destroy();
-                 } */
-
                 this.ckInstance = null;
             },
 

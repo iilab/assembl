@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime
+from abc import abstractmethod
 
 from sqlalchemy.orm import (
     relationship, backref)
@@ -74,6 +75,15 @@ class IdeaGraphView(DiscussionBoundBase):
 
     crud_permissions = CrudPermissions(P_ADMIN_DISC)
 
+    @abstractmethod
+    def get_idea_links(self):
+        pass
+
+    @abstractmethod
+    def get_ideas(self):
+        pass
+
+
 
 class SubGraphIdeaAssociation(DiscussionBoundBase):
     __tablename__ = 'sub_graph_idea_association'
@@ -85,7 +95,8 @@ class SubGraphIdeaAssociation(DiscussionBoundBase):
         "ExplicitSubGraphView", backref=backref(
             "idea_assocs", cascade="all, delete-orphan"))
     idea_id = Column(Integer, ForeignKey(
-        'idea.id', ondelete="CASCADE", onupdate="CASCADE"), index=True)
+        'idea.id', ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False, index=True)
     # reference to the "Idea" object for proxying
     idea = relationship("Idea")
 
@@ -146,7 +157,7 @@ class SubGraphIdeaLinkAssociation(DiscussionBoundBase):
 
     idea_link_id = Column(Integer, ForeignKey(
         'idea_idea_link.id', ondelete="CASCADE", onupdate="CASCADE"),
-        index=True)
+        index=True, nullable=False)
 
     # reference to the "IdeaLink" object for proxying
     idea_link = relationship("IdeaLink")
@@ -224,6 +235,12 @@ class ExplicitSubGraphView(IdeaGraphView):
         retval.ideas = self.ideas
         return retval
 
+    def get_idea_links(self):
+        return self.idea_links
+
+    def get_ideas(self):
+        return self.ideas
+
     @classmethod
     def extra_collections(cls):
         class IdeaCollectionDefinition(AbstractCollectionDefinition):
@@ -249,7 +266,7 @@ class ExplicitSubGraphView(IdeaGraphView):
                                     SubGraphIdeaLinkAssociation, kwargs)))
 
             def contains(self, parent_instance, instance):
-                return SubGraphIdeaAssociation.db.query(
+                return instance.db.query(
                     SubGraphIdeaAssociation).filter_by(
                         idea=instance,
                         sub_graph=parent_instance
@@ -273,7 +290,7 @@ class ExplicitSubGraphView(IdeaGraphView):
                                 SubGraphIdeaLinkAssociation, kwargs)))
 
             def contains(self, parent_instance, instance):
-                return SubGraphIdeaAssociation.db.query(
+                return instance.db.query(
                     SubGraphIdeaLinkAssociation).filter_by(
                         idea_link=instance,
                         sub_graph=parent_instance
@@ -314,18 +331,6 @@ class TableOfContents(IdeaGraphView):
 
     discussion = relationship(
         Discussion, backref=backref("table_of_contents", uselist=False))
-
-    def serializable(self):
-        return {
-            "@id": self.uri_generic(self.id),
-            "@type": self.external_typename(),
-            "topic": self.topic,
-            "slug": self.slug,
-            "table_of_contents_id":
-            TableOfContents.uri_generic(self.table_of_contents_id),
-            "synthesis_id":
-            Synthesis.uri_generic(self.synthesis_id)
-        }
 
     def get_discussion_id(self):
         return self.discussion.id

@@ -1,9 +1,9 @@
 'use strict';
 
-define(['backbone.marionette', 'jquery', 'underscore','common/collectionManager', 'common/context', 'models/discussion', 'models/discussionSource', 'utils/i18n'],
-    function (Marionette, $, _, CollectionManager, Ctx, Discussion, DiscussionSource, i18n) {
+define(['backbone.marionette', 'jquery', 'underscore','common/collectionManager', 'common/context', 'models/discussion', 'models/discussionSource', 'utils/i18n', 'jquery-autosize'],
+    function (Marionette, $, _, CollectionManager, Ctx, Discussion, DiscussionSource, i18n, autosize) {
 
-        var adminDiscussion = Marionette.LayoutView.extend({
+        var adminDiscussion = Marionette.ItemView.extend({
             template: '#tmpl-adminDiscussion',
             className: 'admin-notifications',
             ui: {
@@ -15,14 +15,16 @@ define(['backbone.marionette', 'jquery', 'underscore','common/collectionManager'
 
                 this.model = undefined;
 
-                $.when(collectionManager.getDiscussionModelPromise()).then(
-                    function (Discussion) {
+                collectionManager.getDiscussionModelPromise()
+                    .then(function (Discussion){
                         that.model =  Discussion;
                         that.render();
                     });
 
             },
-
+            onRender: function(){
+                this.$('#introduction').autosize();
+            },
             events: {
               'click @ui.discussion': 'saveDiscussion'
             },
@@ -40,13 +42,19 @@ define(['backbone.marionette', 'jquery', 'underscore','common/collectionManager'
                 var introduction = this.$('textarea[name=introduction]').val(),
                     topic = this.$('input[name=topic]').val(),
                     slug = this.$('input[name=slug]').val(),
-                    objectives = this.$('textarea[name=objectives]').val();
+                    objectives = this.$('textarea[name=objectives]').val(),
+                    web_analytics_piwik_id_site = parseInt(this.$('#web_analytics_piwik_id_site').val()),
+                    help_url = this.$('#help_url').val(),
+                    show_help_in_debate_section = this.$('#show_help_in_debate_section:checked').length == 1;
 
                 this.model.set({
                     introduction:introduction,
                     topic: topic,
                     slug: slug,
-                    objectives: objectives
+                    objectives: objectives,
+                    web_analytics_piwik_id_site: web_analytics_piwik_id_site,
+                    help_url: help_url,
+                    show_help_in_debate_section: show_help_in_debate_section
                 });
 
                 this.model.save(null, {

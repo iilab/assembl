@@ -42,13 +42,16 @@ define(['common/context', 'app', 'utils/panelSpecTypes', 'views/idea'],
              * @event
              */
             onTitleClick: function () {
+                $('.idealist-item').removeClass('is-selected');
+
                 var messageListView = this.getContainingGroup().findViewByType(PanelSpecTypes.MESSAGE_LIST);
-                messageListView.triggerMethod('messageList:clearAllFilters');
-                messageListView.triggerMethod('messageList:addFilterIsSynthesisMessage');
+                    messageListView.triggerMethod('messageList:clearAllFilters');
+                    messageListView.triggerMethod('messageList:addFilterIsSynthesisMessage');
 
-                this._groupContent.setCurrentIdea(null);
+                    this._groupContent.setCurrentIdea(null);
+                    this._groupContent.resetDebateState();
 
-                this._groupContent.resetDebateState();
+                    this.$el.addClass('is-selected');
             }
         });
 

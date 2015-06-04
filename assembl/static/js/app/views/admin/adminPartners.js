@@ -14,11 +14,11 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
                 'click @ui.partnerItem':'deletePartner',
                 'click @ui.partnerItemEdit': 'editPartner'
             },
-            serializeData: function(){
-                return {
-                    partner: this.model
-                }
+
+            modelEvents: {
+                'change':'render'
             },
+
             deletePartner: function(){
                var that = this;
                this.model.destroy({
@@ -30,6 +30,7 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
                   }
                });
             },
+
             editPartner: function(){
                 var self = this;
 
@@ -43,65 +44,13 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
                         this.$('.bbm-modal').addClass('popin');
                     },
                     events: {
-                        'click .js_validatePartner' :'validatePartner'
+                        'submit #partner-form-edit' :'validatePartner'
                     },
                     validatePartner: function (e) {
 
-                        var that = this,
-                            validForm = false,
-                            name_mandatory = this.$('.partner-name'),
-                            description_mandatory = this.$('.partner-description'),
-                            website = this.$('.partner-homepage'),
-                            url_logo = this.$('.partner-logo'),
-                            regexUrl = /^(http|https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/,
-                            parent = name_mandatory.parent().parent(),
-                            p_website = website.parent().parent(),
-                            p_url_logo = url_logo.parent().parent(),
-                            p_description_mandatory = description_mandatory.parent().parent(),
-                            controls = document.querySelectorAll('#partner-form .control-group');
+                        if(e.target.checkValidity()){
 
-                        if(name_mandatory.val() === ''){
-                            validForm = false;
-                            parent.addClass('error');
-                            return false;
-                        } else {
-                            validForm = true;
-                            parent.removeClass('error');
-                        }
-
-                        if(description_mandatory.val() === ''){
-                            validForm = false;
-                            p_description_mandatory.addClass('error');
-                            return false;
-                        } else {
-                            validForm = true;
-                            p_description_mandatory.removeClass('error');
-                        }
-
-                        if(website.val()){
-                            if (!regexUrl.test(website.val())) {
-                                p_website.addClass('error');
-                                validForm = false;
-                                return false;
-                            } else {
-                                validForm = true;
-                                p_website.removeClass('error');
-                            }
-                        }
-
-                        if(url_logo.val()){
-                            if (!regexUrl.test(url_logo.val())) {
-                                p_url_logo.addClass('error');
-                                validForm = false;
-                                return false;
-                            } else {
-                                validForm = true;
-                                p_url_logo.removeClass('error');
-                            }
-                        }
-
-                        if(validForm){
-                            $(controls).removeClass('success');
+                            var that = this;
 
                             self.model.set({
                                 description: this.$('.partner-description').val(),
@@ -113,16 +62,16 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
 
                             self.model.save(null, {
                                 success: function(model, resp){
-                                    self.render();
                                     that.triggerSubmit();
                                 },
                                 error: function(model, resp){
                                     console.log(resp)
                                 }
-                            })
+                            });
 
                         }
 
+                        return false;
                     }
                 });
 
@@ -134,7 +83,10 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
         });
 
         var PartnerList = Marionette.CollectionView.extend({
-            childView: Partners
+            childView: Partners,
+            collectionEvents: {
+                'add sync':'render'
+            }
         });
 
         var adminPartners = Marionette.LayoutView.extend({
@@ -144,16 +96,14 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
               partners: '.js_addPartner',
               close: '.bx-alert-success .bx-close'
             },
-            initialize: function(){
-                this.collectionManager = new CollectionManager();
-            },
+
             regions: {
               partner: '#partner-content'
             },
 
             events: {
-                'click @ui.partners': 'addNewPartner',
-                'click @ui.close': 'close'
+              'click @ui.partners': 'addNewPartner',
+              'click @ui.close': 'close'
             },
 
             serializeData: function () {
@@ -163,15 +113,19 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
             },
 
             onBeforeShow: function(){
-                var that = this;
+                var that = this,
+                    collectionManager = new CollectionManager();
 
                 Ctx.initTooltips(this.$el);
 
-                $.when(this.collectionManager.getAllPartnerOrganizationCollectionPromise()).then(
-                    function (allPartnerOrganization) {
+                collectionManager.getAllPartnerOrganizationCollectionPromise()
+                    .then(function (allPartnerOrganization) {
+
                         var partnerList = new PartnerList({
                             collection: allPartnerOrganization
                         });
+
+                        that.partners = allPartnerOrganization;
 
                         that.getRegion('partner').show(partnerList);
                     });
@@ -194,67 +148,14 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
                         this.$('.bbm-modal').addClass('popin');
                     },
                     events: {
-                     'click .js_validatePartner' :'validatePartner'
+                     'submit #partner-form' :'validatePartner'
                     },
                     validatePartner: function (e) {
 
-                        var that = this,
-                            validForm = false,
-                            name_mandatory = this.$('.partner-name'),
-                            description_mandatory = this.$('.partner-description'),
-                            website = this.$('.partner-homepage'),
-                            url_logo = this.$('.partner-logo'),
-                            regexUrl = /^(http|https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/,
-                            parent = name_mandatory.parent().parent(),
-                            p_website = website.parent().parent(),
-                            p_url_logo = url_logo.parent().parent(),
-                            p_description_mandatory = description_mandatory.parent().parent(),
-                            controls = document.querySelectorAll('#partner-form .control-group');
+                        if(e.target.checkValidity()){
 
-                        if(name_mandatory.val() === ''){
-                            parent.addClass('error');
-                            validForm = false;
-                            return false;
-                        } else {
-                            validForm = true;
-                            parent.removeClass('error');
-                        }
-
-                        if(description_mandatory.val() === ''){
-                            validForm = false;
-                            p_description_mandatory.addClass('error');
-                            return false;
-                        } else {
-                            validForm = true;
-                            p_description_mandatory.removeClass('error');
-                        }
-
-                        if(website.val()){
-                            if (!regexUrl.test(website.val())) {
-                                p_website.addClass('error');
-                                validForm = false;
-                                return false;
-                            } else {
-                                validForm = true;
-                                p_website.removeClass('error');
-                            }
-                        }
-
-                        if(url_logo.val()){
-                            if (!regexUrl.test(url_logo.val())) {
-                                p_url_logo.addClass('error');
-                                validForm = false;
-                                return false;
-                            } else {
-                                validForm = true;
-                                p_url_logo.removeClass('error');
-                            }
-                        }
-
-
-                        if(validForm){
-                            var inputs = document.querySelectorAll('#partner-form *[required=required]');
-                            $(controls).removeClass('success');
+                            var inputs = document.querySelectorAll('#partner-form *[required]'),
+                            that = this;
 
                             var partner = new partnerModel.Model({
                                 description: this.$('.partner-description').val(),
@@ -266,9 +167,9 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
 
                             partner.save(null, {
                                 success: function(model, resp){
+                                    that.destroy();
                                     $(inputs).val('');
-                                    self.render();
-                                    that.triggerSubmit();
+                                    self.partners.fetch();
                                 },
                                 error: function(model, resp){
                                     console.log(resp)
@@ -277,6 +178,7 @@ define(['backbone.marionette', 'app','jquery', 'common/collectionManager', 'comm
 
                         }
 
+                        return false;
                     }
                 });
 

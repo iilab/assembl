@@ -64,7 +64,7 @@ def add_local_role(request):
         raise HTTPBadRequest(e)
     if instances:
         first = instances[0]
-        db = first.db()
+        db = first.db
         for instance in instances:
             db.add(instance)
         db.flush()
@@ -168,6 +168,19 @@ def send_account_verification(request):
     request.matchdict = {}
     send_confirmation_email(request, instance)
     return {}
+
+
+# Should I add a secure_connection condition?
+@view_config(
+    context=InstanceContext, ctx_instance_class=User,
+    request_method='GET', name="verify_password", renderer='json')
+def verify_password(request):
+    ctx = request.context
+    user = ctx._instance
+    password = request.params.get('password', None)
+    if password is not None:
+        return user.check_password(password)
+    raise HTTPBadRequest("Please provide a password")
 
 
 @view_config(

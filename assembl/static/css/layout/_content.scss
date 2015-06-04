@@ -84,6 +84,17 @@
   }
 }
 
+.modal-showSegment{
+  .popin-header{
+    background-color: $white;
+  }
+
+  .popin-body {
+    @include border-radius(6px 6px 0 0);
+  }
+
+}
+
 .modal-firstPost {
   text-align: center;
   .icon-discuss {
@@ -91,3 +102,31 @@
     font-size: 400%;
   }
 }
+
+.debateIntroductionContainer{
+  display: table;
+  height: 100%;
+  .debateIntroductionContent{
+    margin: 0 auto;
+    padding: 5px 15px 15px 15px;
+    background-color: rgb(250,250,250);
+    display: table-cell;
+    vertical-align: middle;
+    .help1, .help2, .help3 {
+      width: 50%;
+      margin: 0 auto;
+      color: $gray1;
+    }
+    .help3{
+      font-size: 20px;
+      margin-top: 55px;
+    }
+    .welcome, .help3{
+      color: $green;
+    }
+  }
+}
+
+
+
+

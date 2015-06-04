@@ -36,7 +36,6 @@ from jinja2 import Environment, PackageLoader
 from . import Base, DiscussionBoundBase
 from ..lib.model_watcher import IModelEventWatcher
 from ..lib.decl_enums import DeclEnum
-from ..lib.frontend_urls import FrontendUrls
 from .auth import (
     User, Everyone, P_ADMIN_DISC, CrudPermissions, P_READ, UserTemplate)
 from .discussion import Discussion
@@ -220,7 +219,7 @@ class NotificationSubscription(DiscussionBoundBase):
         override this with a more optimal implementation
         """
         applicable_subscriptions = []
-        subscriptionsQuery = cls.db.query(cls)
+        subscriptionsQuery = cls.default_db.query(cls)
         subscriptionsQuery = subscriptionsQuery.filter(cls.status==NotificationSubscriptionStatus.ACTIVE);
         subscriptionsQuery = subscriptionsQuery.filter(cls.discussion_id==discussion_id);
         if user:
@@ -245,8 +244,12 @@ class NotificationSubscription(DiscussionBoundBase):
                 self, json, parse_def, aliases, ctx, permissions,
                 user_id, duplicate_error=True):
         from ..auth.util import user_has_permission
+        target_user_id = user_id
+        user = ctx.get_instance_of_class(User)
+        if user:
+            target_user_id = user.id
         if self.user_id:
-            if user_id != self.user_id:
+            if target_user_id != self.user_id:
                 if not user_has_permission(self.discussion_id, user_id, P_ADMIN_DISC):
                     raise HTTPUnauthorized()
             # For now, do not allow changing user, it's way too complicated.
@@ -255,7 +258,7 @@ class NotificationSubscription(DiscussionBoundBase):
         else:
             json_user_id = json.get('user', None)
             if json_user_id is None:
-                json_user_id = user_id
+                json_user_id = target_user_id
             else:
                 json_user_id = User.get_database_id(json_user_id)
                 if json_user_id != user_id and not user_has_permission(self.discussion_id, user_id, P_ADMIN_DISC):
@@ -265,7 +268,7 @@ class NotificationSubscription(DiscussionBoundBase):
             if 'discussion_id' in json and Discussion.get_database_id(json['discussion_id']) != self.discussion_id:
                 raise HTTPBadRequest()
         else:
-            discussion_id = json.get('discussion', None)
+            discussion_id = json.get('discussion', None) or ctx.get_discussion_id()
             if discussion_id is None:
                 raise HTTPBadRequest()
             self.discussion_id = Discussion.get_database_id(discussion_id)
@@ -279,7 +282,7 @@ class NotificationSubscription(DiscussionBoundBase):
             return new_instance._do_update_from_json(
                 json, parse_def, aliases, ctx, permissions,
                 user_id)
-        creation_origin = json.get('creation_origin', None)
+        creation_origin = json.get('creation_origin', "USER_REQUESTED")
         if creation_origin is not None:
             self.creation_origin = NotificationCreationOrigin.from_string(creation_origin)
         if json.get('parent_subscription', None) is not None:
@@ -289,26 +292,34 @@ class NotificationSubscription(DiscussionBoundBase):
             status = NotificationSubscriptionStatus.from_string(status)
             if status != self.status:
                 self.status = status
-                self.last_status_change_date = datetime.now()
-        if not self.check_unique():
-            print "Duplicate"
-            raise HTTPBadRequest("Duplicate")
-        return self
-
-    def check_unique(self):
-        self.db.flush()
-        query, usable = self.unique_query()
-        other = query.first()
-        return other is None or other == self
+                self.last_status_change_date = datetime.utcnow()
+        return self.handle_duplication(
+                json, parse_def, aliases, ctx, permissions, user_id,
+                duplicate_error)
 
     def unique_query(self):
-        return self.db.query(self.__class__).filter_by(
-            user_id=self.user_id, discussion_id=self.discussion_id,
-            parent_subscription_id = self.parent_subscription_id,
-            type=self.type), True
+        # documented in lib/sqla
+        query, _ = super(NotificationSubscription, self).unique_query()
+        user_id = self.user_id or self.user.id
+        return query.filter_by(
+            user_id=user_id, type=self.type), False
 
     def is_owner(self, user_id):
         return self.user_id == user_id
+
+    def reset_defaults(self):
+        # This notification belongs to a template and was changed;
+        # update all users who have the default subscription value.
+        # Incomplete: Does not handle subscribed users without NS.
+        status = (
+            NotificationSubscriptionStatus.INACTIVE_DFT
+            if self.status == NotificationSubscriptionStatus.UNSUBSCRIBED
+            else self.status)
+
+        self.db.query(self.__class__).filter_by(
+            discussion_id=self.discussion_id,
+            creation_origin=NotificationCreationOrigin.DISCUSSION_DEFAULT
+            ).update(status=status)
 
     @classmethod
     def restrict_to_owners(cls, query, user_id):
@@ -347,6 +358,24 @@ class NotificationSubscription(DiscussionBoundBase):
 def update_last_status_change_date(target, value, oldvalue, initiator):
     target.last_status_change_date = datetime.utcnow()
 
+from ..lib.sqla import get_session_maker
+
+@event.listens_for(get_session_maker(), "after_flush")
+def after_flush_list(session, flush_context):
+    session.assembl_objects_to_check_unique = []
+    for obj in session.new | session.dirty:
+        if isinstance(obj, NotificationSubscription):
+            session.assembl_objects_to_check_unique.append(obj)
+    for obj in session.dirty:
+        if isinstance(obj, NotificationSubscription) and session.is_modified(obj):
+            session.assembl_objects_to_check_unique.append(obj)
+
+@event.listens_for(get_session_maker(), "after_flush_postexec")
+def after_flush_check(session, flush_context):
+    for obj in session.assembl_objects_to_check_unique:
+        obj.assert_unique()
+    session.assembl_objects_to_check_unique = []
+
 
 class NotificationSubscriptionGlobal(NotificationSubscription):
     __mapper_args__ = {
@@ -359,6 +388,10 @@ class NotificationSubscriptionGlobal(NotificationSubscription):
     
     def followed_object(self):
         pass
+
+    def unique_query(self):
+        query, _ = super(NotificationSubscriptionGlobal, self).unique_query()
+        return query, True
 
 
 class NotificationSubscriptionOnObject(NotificationSubscription):
@@ -384,7 +417,7 @@ class NotificationSubscriptionOnPost(NotificationSubscriptionOnObject):
 
     post_id = Column(
         Integer, ForeignKey("post.id",
-            ondelete='CASCADE', onupdate='CASCADE'))
+            ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
 
     post = relationship("Post", backref=backref(
         "subscriptions_on_post", cascade="all, delete-orphan"))
@@ -393,8 +426,9 @@ class NotificationSubscriptionOnPost(NotificationSubscriptionOnObject):
         return self.post
 
     def unique_query(self):
-        query, _ = super(NotificationSubscriptionOnPost, self)
-        return query.filter_by(post_id=self.post_id), True
+        query, _ = super(NotificationSubscriptionOnPost, self).unique_query()
+        post_id = self.post_id or self.post.id
+        return query.filter_by(post_id=post_id), True
 
     def _do_update_from_json(
             self, json, parse_def, aliases, ctx, permissions,
@@ -423,7 +457,7 @@ class NotificationSubscriptionOnIdea(NotificationSubscriptionOnObject):
 
     idea_id = Column(
         Integer, ForeignKey("idea.id",
-            ondelete='CASCADE', onupdate='CASCADE'))
+            ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
 
     idea = relationship("Idea", backref=backref(
         "subscriptions_on_idea", cascade="all, delete-orphan"))
@@ -432,8 +466,9 @@ class NotificationSubscriptionOnIdea(NotificationSubscriptionOnObject):
         return self.idea
 
     def unique_query(self):
-        query, _ = super(NotificationSubscriptionOnIdea, self)
-        return query.filter_by(idea_id=self.idea_id), True
+        query, _ = super(NotificationSubscriptionOnIdea, self).unique_query()
+        idea_id = self.idea_id or self.idea.id
+        return query.filter_by(idea_id=idea_id), True
 
     def _do_update_from_json(
             self, json, parse_def, aliases, ctx, permissions,
@@ -458,11 +493,11 @@ class NotificationSubscriptionOnExtract(NotificationSubscriptionOnObject):
         NotificationSubscription.id,
         ondelete='CASCADE',
         onupdate='CASCADE'
-    ), primary_key=True)
+    ), nullable=False, primary_key=True)
 
     extract_id = Column(
         Integer, ForeignKey("extract.id",
-            ondelete='CASCADE', onupdate='CASCADE'))
+            ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
 
     extract = relationship("Extract", backref=backref(
         "subscriptions_on_extract", cascade="all, delete-orphan"))
@@ -471,8 +506,9 @@ class NotificationSubscriptionOnExtract(NotificationSubscriptionOnObject):
         return self.extract
 
     def unique_query(self):
-        query, _ = super(NotificationSubscriptionOnExtract, self)
-        return query.filter_by(extract_id=self.extract_id), True
+        query, _ = super(NotificationSubscriptionOnExtract, self).unique_query()
+        extract_id = self.extract_id or self.extract.id
+        return query.filter_by(extract_id=extract_id), True
 
     def _do_update_from_json(
             self, json, parse_def, aliases, ctx, permissions,
@@ -501,7 +537,7 @@ class NotificationSubscriptionOnUserAccount(NotificationSubscriptionOnObject):
 
     on_user_id = Column(
         Integer, ForeignKey("user.id",
-            ondelete='CASCADE', onupdate='CASCADE'))
+            ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
 
     on_user = relationship("User", foreign_keys=[on_user_id], backref=backref(
         "subscriptions_on_user", cascade="all, delete-orphan"))
@@ -510,8 +546,9 @@ class NotificationSubscriptionOnUserAccount(NotificationSubscriptionOnObject):
         return self.user
 
     def unique_query(self):
-        query, _ = super(NotificationSubscriptionOnUserAccount, self)
-        return query.filter_by(on_user_id=self.on_user_id), True
+        query, _ = super(NotificationSubscriptionOnUserAccount, self).unique_query()
+        on_user_id = self.on_user_id or self.on_user.id
+        return query.filter_by(on_user_id=on_user_id), True
 
     def _do_update_from_json(
             self, json, parse_def, aliases, ctx, permissions,
@@ -572,7 +609,6 @@ class NotificationSubscriptionFollowAllMessages(NotificationSubscriptionGlobal):
 
     def process(self, discussion_id, verb, objectInstance, otherApplicableSubscriptions):
         assert self.wouldCreateNotification(discussion_id, verb, objectInstance)
-        from sqlalchemy import inspect
         from ..tasks.notify import notify
         notification = NotificationOnPostCreated(
             post_id = objectInstance.id,
@@ -649,6 +685,9 @@ class ModelEventWatcherNotificationSubscriptionDispatcher(object):
             applicableInstances = subscriptionClass.findApplicableInstances(objectInstance.get_discussion_id(), CrudVerbs.CREATE, objectInstance)
             for subscription in applicableInstances:
                 applicableInstancesByUser[subscription.user_id].append(subscription)
+        num_instances = len([v for v in applicableInstancesByUser.itervalues() if v])
+        print "processEvent: %d notifications created for %s %s %d" % (
+            num_instances, verb, objectClass.__name__, objectId)
         with transaction.manager:
             for userId, applicableInstances in applicableInstancesByUser.iteritems():
                 if(len(applicableInstances) > 0):
@@ -862,10 +901,9 @@ class Notification(Base):
 
     def get_localizer(self):
         locale = self.first_matching_subscription.user.get_preferred_locale()
-        if not locale:
-            locale = self.first_matching_subscription.discussion.get_discussion_locales()[0]
-        return make_localizer(locale, [
-            join(dirname(dirname(__file__)), 'locale')])
+        # TODO: if locale has country code, make sure we fallback properly.
+        path = os.path.abspath(join(dirname(__file__), os.path.pardir, 'locale'))
+        return make_localizer(locale, [path])
 
     def setup_localizer(self, jinja_env=None):
         localizer = self.get_localizer()
@@ -894,7 +932,7 @@ class Notification(Base):
         return to_email
     
     def render_to_email(self):
-
+        from ..lib.frontend_urls import FrontendUrls
         email_text_part = self.render_to_email_text_part()
         email_html_part = self.render_to_email_html_part()
         if not email_text_part and not email_html_part:
@@ -985,6 +1023,7 @@ class NotificationOnPostCreated(NotificationOnPost):
         return subject
 
     def render_to_email_html_part(self):
+        from ..lib.frontend_urls import FrontendUrls
         from premailer import Premailer
         ink_css_path = os.path.normpath(os.path.join(os.path.abspath(__file__), '..' , '..', 'static', 'js', 'bower', 'ink', 'css', 'ink.css'))
         ink_css = open(ink_css_path)

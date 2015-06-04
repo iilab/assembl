@@ -33,7 +33,6 @@ var requirejs_config = {
         'raven.backbone': '../bower/raven-js/plugins/backbone',
         'raven.console': '../bower/raven-js/plugins/console',
         'raven.require': '../bower/raven-js/plugins/require',
-        'zeroclipboard': '../bower/zeroclipboard/ZeroClipboard',
         'sockjs': '../bower/sockjs/sockjs',
         'cytoscape': '../bower/cytoscape/dist/cytoscape',
         'jit': '../bower/jit/Jit/jit',
@@ -43,7 +42,10 @@ var requirejs_config = {
         'dropdown': '../lib/dropdown',
         'jquery-linkify': '../bower/jQuery-linkify/dist/jquery.linkify.min',
         'jquery-oembed-all': '../bower/jquery-oembed-all/jquery.oembed',
-        'jquery.bootstrap-growl':'../bower/bootstrap-growl/jquery.bootstrap-growl'
+        'jquery.bootstrap-growl':'../bower/bootstrap-growl/jquery.bootstrap-growl',
+
+        'bluebird':'../bower/bluebird/js/browser/bluebird',
+        'debug':'../bower/visionmedia-debug/dist/debug'
     },
     shim: {
         'underscore': {
@@ -93,9 +95,6 @@ var requirejs_config = {
         'ckeditor-sharedspace': {
             deps: ['ckeditor'],
             exports: 'CKEDITOR'
-        },
-        'zeroclipboard': {
-            exports: 'ZeroClipboard'
         },
         'sockjs': {
             deps: ['jquery'],

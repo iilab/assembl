@@ -27,7 +27,7 @@ class DiscussionBoundBase(Base):
         if not connection:
             # WARNING: invalidate has to be called within an active transaction.
             # This should be the case in general, no need to add a transaction manager.
-            connection = self.db().connection()
+            connection = self.db.connection()
         if 'cdict' not in connection.info:
             connection.info['cdict'] = {}
         connection.info['cdict'][self.uri()] = (
@@ -37,13 +37,14 @@ class DiscussionBoundBase(Base):
     def get_discussion_conditions(cls, discussion_id, alias_maker=None):
         return (cls.discussion_id == discussion_id, )
 
-    def unique_query(self, query):
+    def unique_query(self):
+        query, usable = super(DiscussionBoundBase, self).unique_query()
         discussion_id = self.discussion_id
         if not discussion_id and self.discussion:
             discussion_id = self.discussion.id
-        if not discussion_id:
-            return (query, False)
-        return (query.filter_by(discussion_id=discussion_id), False)
+        if discussion_id:
+            query = query.filter_by(discussion_id=discussion_id)
+        return (query, usable)
 
     def tombstone(self):
         return DiscussionBoundTombstone(self)
@@ -79,6 +80,8 @@ class DiscussionBoundTombstone(Tombstone):
 from .auth import (
     AbstractAgentAccount,
     AgentProfile,
+    AgentStatusInDiscussion,
+    AnonymousUser,
     DiscussionPermission,
     EmailAccount,
     IdentityProvider,
@@ -88,6 +91,7 @@ from .auth import (
     Permission,
     Role,
     User,
+    UserLanguagePreference,
     UserRole,
     UserTemplate,
     Username,
@@ -123,12 +127,8 @@ from .mail import (
     MailingList,
 )
 from .idea import (
-    Argument,
-    Criterion,
     Idea,
     IdeaLink,
-    Issue,
-    Position,
     RootIdea,
 )
 from .idea_content_link import (
@@ -196,6 +196,19 @@ from .notification import (
     NotificationCreationOrigin,
     NotificationOnPost,
     NotificationOnPostCreated,
+)
+from .feed_parsing import (
+    FeedPostSource,
+    LoomioPostSource,
+    FeedPost,
+    LoomioFeedPost,
+    WebLinkAccount,
+    LoomioAccount,
+)
+from .edgesense_drupal import (
+    EdgeSenseDrupalSource,
+    SourceSpecificAccount,
+    SourceSpecificPost,
 )
 
 declare_history_mappers()

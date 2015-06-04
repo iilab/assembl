@@ -184,7 +184,7 @@ def collection_add(request, args):
         del args['type']
     else:
         typename = ctx.collection_class.external_typename()
-    session = User.db
+    session = User.default_db
     old_autoflush = session.autoflush
     session.autoflush = False
     try:
@@ -194,7 +194,7 @@ def collection_add(request, args):
         raise HTTPBadRequest(e)
     if instances:
         first = instances[0]
-        db = first.db()
+        db = first.db
         for instance in instances:
             db.add(instance)
         session.autoflush = old_autoflush
@@ -349,7 +349,7 @@ def class_add(request):
         raise HTTPBadRequest(e)
     if instances:
         first = instances[0]
-        db = first.db()
+        db = first.db
         for instance in instances:
             db.add(instance)
         db.flush()
@@ -377,7 +377,7 @@ def collection_add_json(request):
         raise HTTPBadRequest(e)
     if instances:
         first = instances[0]
-        db = first.db()
+        db = first.db
         for instance in instances:
             db.add(instance)
         db.flush()
@@ -420,14 +420,14 @@ def votes_collection_add_json(request):
     typename = request.json_body.get(
         '@type', ctx.collection_class.external_typename())
     json = request.json_body
-    json['voter_id'] = user_id
+    json['voter'] = User.uri_generic(user_id)
     try:
         instances = ctx.create_object(typename, json, user_id)
     except Exception as e:
         raise HTTPBadRequest(e)
     if instances:
         first = instances[0]
-        db = first.db()
+        db = first.db
         for instance in instances:
             db.add(instance)
         db.flush()
@@ -460,7 +460,7 @@ def votes_collection_add(request):
         raise HTTPBadRequest(e)
     if instances:
         first = instances[0]
-        db = first.db()
+        db = first.db
         for instance in instances:
             db.add(instance)
         print "before flush"

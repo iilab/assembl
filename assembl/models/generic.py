@@ -1,15 +1,19 @@
 from datetime import datetime
+import logging
 
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy import (
     Column,
     Integer,
+    SmallInteger,
     Boolean,
     UnicodeText,
     String,
     DateTime,
     ForeignKey,
 )
+from virtuoso.alchemy import CoerceUnicode
+from virtuoso.textindex import TextIndex, TableWithTextIndex
 
 from . import DiscussionBoundBase
 from ..semantic.virtuoso_mapping import QuadMapPatternS
@@ -19,7 +23,11 @@ from ..auth import (
 from ..lib.sqla import (INSERT_OP, UPDATE_OP, get_model_watcher)
 from ..semantic.namespaces import  SIOC, CATALYST, IDEA, ASSEMBL, DCTERMS, QUADNAMES
 from .discussion import Discussion
+from ..lib.sqla import Base
 #from ..lib.history_meta import Versioned
+
+log = logging.getLogger('assembl')
+
 
 class ContentSource(DiscussionBoundBase):
     """
@@ -40,7 +48,13 @@ class ContentSource(DiscussionBoundBase):
         'discussion.id',
         ondelete='CASCADE',
         onupdate='CASCADE'
-    ))
+    ), nullable=False)
+    connection_error = Column(SmallInteger)
+    error_description = Column(String)
+    error_backoff_until = Column(DateTime)
+
+    # Non-persistant, default reading status
+    read_status = 0
 
     @classmethod
     def special_quad_patterns(cls, alias_maker, discussion_id):
@@ -68,20 +82,15 @@ class ContentSource(DiscussionBoundBase):
 
     retypeable_as = ("IMAPMailbox", "MailingList", "AbstractMailbox")
 
-    def serializable(self):
-        return {
-            "@id": self.uri_generic(self.id),
-            "@type": self.external_typename(),
-            "name": self.name,
-            "creation_date": self.creation_date.isoformat(),
-            "discussion_id": self.discussion_id
-        }
-
     def __repr__(self):
         return "<ContentSource %s>" % repr(self.name)
 
     def import_content(self, only_new=True):
-        pass
+        from assembl.tasks.source_reader import wake
+        wake(self.id, reimport=not only_new)
+
+    def make_reader(self):
+        return None
 
     def get_discussion_id(self):
         return self.discussion_id
@@ -118,20 +127,25 @@ class PostSource(ContentSource):
         'polymorphic_identity': 'post_source',
     }
 
-    def serializable(self):
-        ser = super(PostSource, self).serializable()
-        ser["last_import"] = \
-            self.last_import.isoformat() if self.last_import else None
-        return ser
-
     def __repr__(self):
         return "<PostSource %s>" % repr(self.name)
 
-    def import_content(self, only_new=True):
-        pass
-
     def get_discussion_id(self):
         return self.discussion_id
+
+    def get_default_prepended_id(self):
+        # Used for PostSource's whose incoming posts cannot guarantee
+        # Post.post_source_id is unique; in which case, the Post.message_id
+        # which is a globally unique value maintain uniqueness integrity
+        # by calling this function
+        # Must be implemented by subclasses that will not have unique
+        # id's on their incoming posts
+        return ""
+
+    @property
+    def number_of_imported_posts(self):
+        from .post import ImportedPost
+        return self.db.query(ImportedPost).filter_by(source_id=self.id).count()
 
     @classmethod
     def get_discussion_conditions(cls, discussion_id, alias_maker=None):
@@ -139,7 +153,7 @@ class PostSource(ContentSource):
 
     def send_post(self, post):
         """ Send a new post in the discussion to the source. """
-        raise NotImplementedError(
+        log.warn(
             "Source %s did not implement PostSource::send_post()"
             % self.__class__.__name__)
 
@@ -161,11 +175,37 @@ class AnnotatorSource(ContentSource):
     }
 
 
+class ContentSourceIDs(Base):
+    __tablename__ = 'content_source_ids'
+
+    id = Column(Integer, primary_key=True)
+    source_id = Column(
+        Integer, ForeignKey(
+            'content_source.id', onupdate='CASCADE', ondelete='CASCADE'),
+        nullable=False)
+    source = relationship('ContentSource', backref=backref(
+                          'pushed_messages',
+                          cascade='all, delete-orphan'))
+
+    post_id = Column(
+        Integer, ForeignKey(
+            'content.id', onupdate='CASCADE', ondelete='CASCADE'),
+        nullable=False)
+    post = relationship('Content',
+                        backref=backref('source_ids',
+                        cascade='all, delete-orphan'))
+    message_id_in_source = Column(String(256), nullable=False)
+
+
 class Content(DiscussionBoundBase):
     """
     Content is a polymorphic class to describe what is imported from a Source.
+    The body and subject properly belong to the Post but were moved here to
+    optimize the most common case.
     """
     __tablename__ = "content"
+    __table_cls__ = TableWithTextIndex
+
     rdf_class = SIOC.Post
 
     id = Column(Integer, primary_key=True,
@@ -189,7 +229,17 @@ class Content(DiscussionBoundBase):
         info={'rdf': QuadMapPatternS(None, ASSEMBL.in_conversation)}
     )
 
+    subject = Column(CoerceUnicode(), server_default="",
+        info={'rdf': QuadMapPatternS(None, DCTERMS.title)})
+    # TODO: check HTML or text? SIOC.content should be text.
+    # Do not give it for now, privacy reasons
+    body = Column(UnicodeText, server_default="")
+    #    info={'rdf': QuadMapPatternS(None, SIOC.content)})
+
     hidden = Column(Boolean, server_default='0')
+
+    # Another bloody virtuoso bug. Insert with large string fails.
+    # body_text_index = TextIndex(body, clusters=[discussion_id])
 
     __mapper_args__ = {
         'polymorphic_identity': 'content',
@@ -197,25 +247,22 @@ class Content(DiscussionBoundBase):
         'with_polymorphic': '*'
     }
 
-    def __init__(self, *args, **kwargs):
-        super(Content, self).__init__(*args, **kwargs)
-
     def __repr__(self):
         return "<Content %s>" % repr(self.type)
 
     def get_body(self):
-        return ""
+        return self.body.strip()
+
+    def get_title(self):
+        return self.subject
 
     def get_body_mime_type(self):
-        """ Return the format of the body, so the frontend will know how to 
+        """ Return the format of the body, so the frontend will know how to
         display it.  Currently, only:
         text/plain (Understood as preformatted text)
         text/html (Undestood as some subste of html)
         """
         return "text/plain"
-
-    def get_title(self):
-        return ""
 
     def send_to_changes(self, connection=None, operation=UPDATE_OP):
         super(Content, self).send_to_changes(connection, operation)

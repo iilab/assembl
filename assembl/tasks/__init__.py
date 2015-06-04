@@ -3,8 +3,9 @@ import ConfigParser
 
 from pyramid.paster import get_appsettings
 from pyramid.path import DottedNameResolver
+from kombu import Exchange, Queue
 
-from ..lib.sqla import configure_engine, get_session_maker
+from ..lib.sqla import configure_engine
 from ..lib.zmqlib import configure_zmq
 from ..lib.config import set_config
 from zope.component import getGlobalSiteManager
@@ -18,41 +19,57 @@ raven_client = None
 
 def configure(registry, task_name):
     settings = registry.settings
+    if settings.get('%s_debug_signal' % (task_name,), False):
+        from assembl.lib import signals
+        signals.listen()
     configure_zmq(settings['changes.socket'], False)
-    configure_engine(settings, False)
-    get_session_maker(False)
     # temporary solution
     configure_model_watcher(registry, task_name)
 
 
-def config_celery_app(celery_app, settings):
-    # TODO: automate this.
-    celery_app.config_from_object({
-        "BROKER_URL": settings['%s.broker' % (celery_app.main,)],
-        "CELERY_ROUTES": {
-            'assembl.tasks.imap.import_mails': {'queue': 'imap'},
-            'assembl.tasks.notification_dispatch.processAccountCreatedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processAccountModifiedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processExtractCreatedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processExtractDeletedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processExtractModifiedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processIdeaCreatedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processIdeaDeletedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processIdeaModifiedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notification_dispatch.processPostCreatedTask': {
-                'queue': 'notification_dispatch'},
-            'assembl.tasks.notify.notify': {'queue': 'notify'},
-            'assembl.tasks.notify.process_pending_notifications': {
-                'queue': 'notify'},
-        }})
+_celery_queues = None
+_celery_routes = None
+
+
+def get_celery_queues():
+    global _celery_queues
+    if not _celery_queues:
+        _celery_queues = [
+            Queue(q, Exchange(q), routing_key=q)
+            for q in ('notify', 'imap', 'notification_dispatch')]
+    return _celery_queues
+
+
+def get_celery_routes():
+    global _celery_routes
+    apps = (('imap', 'imap_celery_app'),
+            ('notification_dispatch', 'notif_dispatch_celery_app'),
+            ('notify', 'notify_celery_app'))
+    if not _celery_routes:
+        _celery_routes = {}
+        for module, app in apps:
+            full_module_name = "assembl.tasks."+module
+            mod = __import__(full_module_name, fromlist=[app])
+            app = getattr(mod, app)
+            for task_name in app.tasks:
+                if task_name.startswith(full_module_name):
+                    _celery_routes[task_name] = {
+                        'queue': module, 'routing_key': module}
+    return _celery_routes
+
+
+def config_celery_app(celery_app, settings=None):
+    config = {
+        "CELERY_QUEUES": get_celery_queues(),
+        "CELERY_ROUTES": get_celery_routes(),
+        "CELERY_TASK_SERIALIZER": 'json',
+        "CELERY_ACKS_LATE": True,
+        "CELERY_STORE_ERRORS_EVEN_IF_IGNORED": True}
+    if settings is not None:
+        config['BROKER_URL'] = settings['%s.broker' % (celery_app.main,)]
+        celery_app.config_from_object(config, force=True)
+    else:
+        celery_app.config_from_object(config)
 
 
 def init_task_config(celery_app):
@@ -82,6 +99,7 @@ def init_task_config(celery_app):
     registry = getGlobalSiteManager()
     registry.settings = settings
     set_config(settings)
+    configure_engine(settings, False)
     configure(registry, celery_app.main)
     config_celery_app(celery_app, settings)
     from threaded_model_watcher import ThreadDispatcher
@@ -97,6 +115,19 @@ def init_task_config(celery_app):
     if notif_dispatch_celery_app.main != celery_app.main:
         config_celery_app(notif_dispatch_celery_app, settings)
     _inited = True
+
+
+def first_init():
+    from .imap import imap_celery_app
+    from .notification_dispatch import notif_dispatch_celery_app
+    from .notify import notify_celery_app
+    config_celery_app(imap_celery_app)
+    config_celery_app(notify_celery_app)
+    config_celery_app(notif_dispatch_celery_app)
+
+
+# This allows us to use celery CLI monitoring
+first_init()
 
 
 def includeme(config):

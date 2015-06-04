@@ -3,7 +3,7 @@ from abc import ABCMeta, abstractmethod
 
 from bs4 import BeautifulSoup
 import simplejson as json
-from sqlalchemy.orm import relationship, backref, aliased
+from sqlalchemy.orm import relationship, backref, aliased, deferred
 from sqlalchemy.sql import func
 from sqlalchemy import (
     Column,
@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     ForeignKey,
     UnicodeText,
+    Binary,
     Text,
     or_,
     event,
@@ -46,7 +47,7 @@ class Post(Content):
         ondelete='CASCADE',
         onupdate='CASCADE'
     ), primary_key=True)
-    
+
     message_id = Column(CoerceUnicode(),
                         nullable=False,
                         index=True,
@@ -77,16 +78,10 @@ class Post(Content):
                 conditions=(cls.parent_id != None,)),
         ]
 
-    creator_id = Column(Integer, ForeignKey('agent_profile.id'),
-        info={'rdf': QuadMapPatternS(None, SIOC.has_creator)})
+    creator_id = Column(Integer, ForeignKey('agent_profile.id'), nullable=False,
+        info={'rdf': QuadMapPatternS(
+            None, SIOC.has_creator, AgentProfile.agent_as_account_iri.apply(None))})
     creator = relationship(AgentProfile, backref="posts_created")
-    
-    subject = Column(CoerceUnicode(), nullable=True,
-        info={'rdf': QuadMapPatternS(None, DCTERMS.title)})
-    # TODO: check HTML or text? SIOC.content should be text.
-    # Do not give it for now, privacy reasons
-    body = Column(UnicodeText, nullable=False)
-    #    info={'rdf': QuadMapPatternS(None, SIOC.content)})
 
     __mapper_args__ = {
         'polymorphic_identity': 'post',
@@ -105,14 +100,10 @@ class Post(Content):
         # TODO: Make it user-specific.
         return self.views is not None
 
-    def get_title(self):
-        return self.subject
-
-    def get_subject(self):
-        return self.subject
-
-    def get_body(self):
-        return self.body.strip()
+    def get_url(self):
+        from assembl.lib.frontend_urls import FrontendUrls
+        frontendUrls = FrontendUrls(self.discussion)
+        return frontendUrls.get_post_url(self)
 
     def get_body_as_html(self):
         if self.get_body_mime_type == 'text/html':
@@ -160,7 +151,7 @@ class Post(Content):
 
     def last_updated(self):
         ancestry_query_string = "%s%d,%%" % (self.ancestry or '', self.id)
-        
+
         query = self.db.query(
             func.max(Content.creation_date)
         ).select_from(
@@ -243,14 +234,14 @@ class Post(Content):
 
 
 def orm_insert_listener(mapper, connection, target):
-    """ This is to allow the root idea to send update to "All posts", 
+    """ This is to allow the root idea to send update to "All posts",
     "Synthesis posts" and "orphan posts" in the table of ideas", if the post
     isn't otherwise linked to the table of idea """
     if target.discussion.root_idea:
         target.discussion.root_idea.send_to_changes(connection)
-        
+
 event.listen(Post, 'after_insert', orm_insert_listener, propagate=True)
-    
+
 
 
 class AssemblPost(Post):
@@ -264,11 +255,11 @@ class AssemblPost(Post):
         ondelete='CASCADE',
         onupdate='CASCADE'
     ), primary_key=True)
-        
+
     __mapper_args__ = {
         'polymorphic_identity': 'assembl_post',
     }
-    
+
     def get_body_mime_type(self):
         return "text/plain"
 
@@ -289,21 +280,21 @@ class SynthesisPost(AssemblPost):
         ForeignKey('synthesis.id', ondelete="CASCADE", onupdate="CASCADE"),
         nullable=False
     )
-    
+
     publishes_synthesis = relationship('Synthesis',
                                      backref=backref('published_in_post',uselist=False))
-    
+
     __mapper_args__ = {
         'polymorphic_identity': 'synthesis_post',
     }
-    
+
     def __init__(self, *args, **kwargs):
         super(SynthesisPost, self).__init__(*args, **kwargs)
         self.publishes_synthesis.publish()
 
     def get_body_mime_type(self):
         return "text/html"
-    
+
     def get_title(self):
         return self.publishes_synthesis.subject
 
@@ -382,28 +373,40 @@ class ImportedPost(Post):
     source_post_id = Column(CoerceUnicode(),
                         nullable=False,
                         doc="The source-specific unique id of the imported post.  A listener keeps the message_id in the post class in sync")
-    
-    source_id = Column('source_id', Integer, ForeignKey('post_source.id', ondelete='CASCADE'),
+
+    source_id = Column('source_id', Integer, ForeignKey(
+        'post_source.id', ondelete='CASCADE'), nullable=False,
         info={'rdf': QuadMapPatternS(None, ASSEMBL.has_origin)})
-    
+
     source = relationship(
         "PostSource",
         backref=backref('contents')
     )
-    
+
     body_mime_type = Column(CoerceUnicode(),
                         nullable=False,
                         doc="The mime type of the body of the imported content.  See Content::get_body_mime_type() for allowed values.")
-    
+
+    imported_blob = deferred(Column(Binary), group='raw_details')
+
     __mapper_args__ = {
         'polymorphic_identity': 'imported_post',
     }
-    
+
     def get_body_mime_type(self):
         return self.body_mime_type
-    
-@event.listens_for(ImportedPost.source_post_id, 'set', propagate=True)
-def receive_set(target, value, oldvalue, initiator):
-    "listen for the 'set' event, keeps the message_id in Post class in sync with the source_post_id"
 
-    target.message_id = value 
+    def unique_query(self):
+        query, _ = super(ImportedPost, self).unique_query()
+        source_id = self.source_id or self.source.id
+        return query.filter_by(
+            source_id=source_id,
+            source_post_id=self.source_post_id), True
+
+
+
+# @event.listens_for(ImportedPost.source_post_id, 'set', propagate=True)
+# def receive_set(target, value, oldvalue, initiator):
+#     "listen for the 'set' event, keeps the message_id in Post class in sync with the source_post_id"
+
+#     target.message_id = target.source.get_default_prepend_id() + value

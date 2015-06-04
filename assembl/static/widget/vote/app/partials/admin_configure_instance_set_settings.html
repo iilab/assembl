@@ -58,17 +58,12 @@
                 <button ng-click="widget.settings.items.splice($index,1)">{{'adminConfigureInstanceSetAppearanceDeleteItem' | translate}}</button>
             </div>
             <div ng-init="item_index = $index" class="item-content">
-                <span>{{'adminConfigureInstanceSetAppearanceItemType' | translate}} </span>
-                <select ng-model="item.type">
-                    <option value="vertical_gauge">Vertical gauge (aka lickert), needs 1 criterion</option>
-                    <option value="2_axes">Two axes graph, needs 2 criteria</option>
-                </select>
-
-                <br/>
-
                 <div ng-repeat="field in mandatory_item_fields">
-                    <span ng-attr-class="{{ field.description && 'with-title' }}" title="{{ field.description }}">{{ field.label || field.key }} ({{ field.type }}):</span>
-                    <input type="text" ng-model="item[field.key]" value="{{ field.default }}" />
+                    <div ng-switch on="field.type">
+                        <span ng-attr-class="{{ field.description && 'with-title' }}" title="{{ field.description }}">{{ field.label || field.key }} ({{ field.type }}):</span>
+                        <select ng-switch-when="select" ng-model="item[field.key]" ng-options="v.key as v.label for v in field.options"></select>
+                        <input ng-switch-default type="text" ng-model="item[field.key]" value="{{ field.default }}" />
+                    </div>
                 </div>
 
                 <fieldset>
@@ -94,7 +89,9 @@
                 <div class="item" ng-repeat="criterion in item.criteria" ng-controller="adminConfigureInstanceSetSettingsItemCriterionCtl">
                     <div class="item-title">
                         <strong>{{'adminConfigureInstanceSetAppearanceCriterion' | translate}}</strong>
+                        <!-- not shown because not necessary: when the item type dropdown value changes, the controller creates the right amount of criteria
                         <button ng-click="item.criteria.splice($index,1)">{{'adminConfigureInstanceSetAppearanceDeleteCriterion' | translate}}</button>
+                        -->
                     </div>
                     <div ng-init="criterion_index = $index" class="item-content">
                         <!--
@@ -105,15 +102,28 @@
                                 <div ng-switch on="field.type">
                                     <span ng-attr-class="{{ field.description && 'with-title' }}" title="{{ field.description }}">{{ field.label || field.key }} ({{ field.type }}):</span>
                                     <select ng-switch-when="criterion" ng-model="criterion[field.key]" ng-options="c['@id'] as c.shortTitle for c in criteria"></select>
+                                    <select ng-switch-when="select" ng-model="criterion[field.key]" ng-options="v.key as v.label for v in field.options" ng-change="field.key == 'type' && resetCriterionFromType(item_index, criterion_index)"></select>
                                     <input ng-switch-default type="text" ng-model="criterion[field.key]" />
+                                </div>
+                            </div>
+
+                            <div ng-if="criterion.hasOwnProperty('type') && mandatory_typed_criterion_fields.hasOwnProperty(criterion.type)">
+                                <div ng-repeat="field in mandatory_typed_criterion_fields[criterion.type]">
+                                    <div ng-switch on="field.type">
+                                        <span ng-attr-class="{{ field.description && 'with-title' }}" title="{{ field.description }}">{{ field.label || field.key }} ({{ field.type }}):</span>
+                                        <select ng-switch-when="criterion" ng-model="criterion[field.key]" ng-options="c['@id'] as c.shortTitle for c in criteria"></select>
+                                        <select ng-switch-when="select" ng-model="criterion[field.key]" ng-options="v.key as v.label for v in field.options"></select>
+                                        <input ng-switch-default type="text" ng-model="criterion[field.key]" />
+                                    </div>
                                 </div>
                             </div>
                         <!--
                         </fieldset>
                         -->
+
                         <fieldset>
                             <legend>{{'adminConfigureInstanceSetAppearanceOptionalFields' | translate}}</legend>
-                            <div ng-repeat="field in optional_criterion_fields">
+                            <div ng-repeat="field in aggregated_optional_criterion_fields_by_type[criterion.type]">
                                 <div ng-if="criterion.hasOwnProperty(field.key)">
                                     <span ng-attr-class="{{ field.description && 'with-title' }}" title="{{ field.description }}">{{ field.label || field.key }} ({{ field.type }}):</span>
                                     <input type="text" ng-model="criterion[field.key]" />
@@ -124,7 +134,7 @@
                             <br/>
 
                             <span>{{'adminConfigureInstanceSetAppearanceAddOptionalField' | translate}}</span>
-                            <select ng-model="criterion_current_selected_field" ng-options="field.key as field.key for field in optional_criterion_fields"></select>
+                            <select ng-model="criterion_current_selected_field" ng-options="optional_field.key as optional_field.key group by getOptionalFieldCategoryName(optional_field.criterion_type) for optional_field in aggregated_optional_criterion_fields_by_type[criterion.type]"></select>
                             <!--
                             <button ng-click="criterion[criterion_current_selected_field]='something';">Add</button>
                             -->
@@ -134,10 +144,9 @@
                 </div>
 
                 <br/>
-                <!--
-                <button ng-click="item.criteria.push({});">Add a criterion</button>
-                -->
+                <!-- not shown because not necessary: when the item type dropdown value changes, the controller creates the right amount of criteria
                 <button ng-click="addCriterion(item_index);">{{'adminConfigureInstanceSetAppearanceAddCriterion' | translate}}</button>
+                -->
             </div>
         </div>
 

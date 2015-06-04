@@ -8,7 +8,6 @@ $mesageBodyLineHeight: $baseLineHeight;
 $ten: 10px;
 $separatorBulletMargin: 0.6em;
 $previewNumLines: 4;
-$message-body: #999999;
 
 // A message block
 // ================
@@ -70,15 +69,20 @@ $message-body: #999999;
 
   .message-subject {
     @extend .header_item_template;
-    cursor: pointer;
+    &.hidden {
+      display: none !important;
+    }
   }
 
-  .js_messageTitle {
+  .js_messageTitle, .js_messageHeader {
     cursor: pointer;
   }
 
   .message-body.ellipsis {
     cursor: pointer;
+    //Must match height: in message.js, so that there is an elipsis before 
+    //dotdotdot renders, and so that the height doesn't change.
+    max-height: 52px;
   }
 
   .header-separator-bullet {
@@ -118,7 +122,7 @@ $message-body: #999999;
 
   &.viewStyleFullBody, &.viewStylePreview {
     /* Most styles are shared between the FullBody and Preview styles */
-    line-height: 19px;
+    line-height: 19.1px; /* 19px is not enough for message title: it cuts the bottom of the "g" letter */
     > .avatar {
       position: absolute;
     }
@@ -154,6 +158,16 @@ $message-body: #999999;
     }
     .message-menu-actions {
       margin-top: $mesageSpacing;
+      & * {
+        opacity: 0.7;
+      }
+      & *:hover {
+        opacity: 1;
+      }
+
+      .icon-download::before {
+        font-size: 17px;
+      }
     }
     .head {
       border-bottom: 2px solid $gray3;
@@ -163,6 +177,7 @@ $message-body: #999999;
   &.viewStyleFullBody {
     /* FullBody specific styles */
     .message-body.body_format_text_plain {
+      word-wrap: break-word;// avoid overlap content
       white-space: pre-line;
       & > {
         white-space: normal;
@@ -199,20 +214,22 @@ $message-body: #999999;
     &:hover {
       .message-menu-actions {
         visibility: visible;
-        opacity: 1;
       }
     }
     .message-menu-actions {
       visibility: hidden;
-      opacity: 0;
+    }
+
+    .message-subject, .message-date {
+      color: $txtGray1;
     }
 
     .message-body {
       position: relative;
       padding: 0px;
-      max-height: $previewNumLines * $mesageBodyLineHeight * $messageBodyFontSize;
+      //max-height: $previewNumLines * $mesageBodyLineHeight * $messageBodyFontSize;
       overflow: hidden;
-      color: $message-body;
+      color: $txtGray1;
     }
 
     .message-body.body_format_text_plain > .elipsis > div {
@@ -275,7 +292,7 @@ $message-body: #999999;
       margin: 0px 0px 0px $mesageSpacing; //No left margin because there is an element on the left
     }
 
-    .message-subject {
+    .message-abstract {
       @extend .header_item_template;
       overflow: hidden;
       text-align: left;
@@ -285,12 +302,12 @@ $message-body: #999999;
       > {
         white-space: normal;
       }
-      .message-title {
+      .message-subject {
         @extend .header_item_template;
         @extend .header-separator-bullet;
         text-overflow: ellipsis;
         white-space: nowrap;
-        color: #333333;
+        color: $txtGray2;
       }
       .message-body {
         @extend .header_item_template;
@@ -401,7 +418,6 @@ $message-body: #999999;
         .synthesis-expression {
           display: inline;
           margin: 0;
-          pointer-events: none;
           & > *:first-child {
             margin-top: 0px;
           }
@@ -434,9 +450,11 @@ $message-body: #999999;
 
   &.SynthesisPost {
     &.viewStyleTitleOnly {
-      .message-subject {
+      .message-abstract {
         margin-left: 5px;
         padding: 0 10px;
+        max-height: 27px;
+        overflow: hidden;
       }
     }
   }
@@ -517,7 +535,11 @@ body.js_annotatorUserCannotAddExtract > .textbubble {
     left: 0px;
   }
 }
-
+.printable .message {
+  .message-menu {
+    display: none !important;
+  }
+}
 /* ------------------- Start of message family section ---------------------- */
 
 // The arrow
@@ -659,4 +681,12 @@ body.js_annotatorUserCannotAddExtract > .textbubble {
 
 }
 
+.printable {
+  .link-img {
+    display: none !important;
+    }
+  .message-family-arrow.arrow, .message-family-container.child {
+    border-left: none !important;
+  }
+}
 /* --------------------- End of message family section ---------------------- */

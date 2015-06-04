@@ -1,4 +1,4 @@
-.homePanel {
+.contextPanel {
   height: 100%;
   overflow-y: auto;
 
@@ -183,7 +183,7 @@
     font-weight: 400;
     border: 1px solid transparent;
     overflow-y: hidden;
-    word-break: break-all;
+    word-break: break-word;
     -webkit-hyphens: auto;
     -moz-hyphens: auto;
     hyphens: auto;
@@ -201,4 +201,20 @@
 .context-objective.ctx_edit, 
 .context-introduction.ctx_edit {
   cursor: text;
+}
+
+.partnersList{
+  .partnersItem {
+    display: table;
+    width: em(200);
+    height: em(200);
+    a {
+      display: table-cell;
+      vertical-align: middle;
+    }
+    .partnerItemLogo{
+      max-width: em(200);
+      max-height: em(200);
+    }
+  }
 }

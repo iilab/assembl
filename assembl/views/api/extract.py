@@ -5,7 +5,7 @@ from cornice import Service
 
 from pyramid.security import authenticated_userid, Everyone, ACLDenied
 from pyramid.httpexceptions import (
-    HTTPNotFound, HTTPClientError, HTTPForbidden, HTTPServerError, HTTPBadRequest, HTTPNoContent)
+    HTTPNotFound, HTTPBadRequest, HTTPForbidden, HTTPServerError, HTTPNoContent)
 from sqlalchemy import Unicode
 from sqlalchemy.sql.expression import cast
 from sqlalchemy.orm import aliased, joinedload, joinedload_all, contains_eager
@@ -55,7 +55,7 @@ search_extracts = Service(
 def get_extract(request):
     extract_id = request.matchdict['id']
     extract = Extract.get_instance(extract_id)
-    view_def = request.GET.get('view')
+    view_def = request.GET.get('view') or 'default'
     discussion_id = int(request.matchdict['discussion_id'])
     user_id = authenticated_userid(request)
     permissions = get_permissions(user_id, discussion_id)
@@ -64,29 +64,27 @@ def get_extract(request):
         raise HTTPNotFound(
             "Extract with id '%s' not found." % extract_id)
 
-    if view_def:
-        return extract.generic_json(view_def, user_id, permissions)
-    else:
-        return extract.serializable()
+    return extract.generic_json(view_def, user_id, permissions)
 
 
-def _get_extracts_real(discussion, view_def=None, ids=None, user_id=Everyone):
-    all_extracts = Extract.db.query(Extract).filter(
+def _get_extracts_real(discussion, view_def='default', ids=None, user_id=Everyone):
+    all_extracts = discussion.db.query(Extract).filter(
         Extract.discussion_id == discussion.id
     )
     if ids:
         ids = [get_database_id("Extract", id) for id in ids]
         all_extracts = all_extracts.filter(Extract.id.in_(ids))
 
+
     all_extracts = all_extracts.options(joinedload_all(
-        Extract.creator))
+        Extract.content))
+    all_extracts = all_extracts.options(joinedload_all(
+        Extract.text_fragment_identifiers))
     permissions = get_permissions(user_id, discussion.id)
 
-    if view_def:
-        return [extract.generic_json(view_def, user_id, permissions)
-                for extract in all_extracts]
-    else:
-        return [extract.serializable() for extract in all_extracts]
+    return [extract.generic_json(view_def, user_id, permissions)
+            for extract in all_extracts]
+
 
 
 @extracts.get(permission=P_READ)
@@ -138,7 +136,7 @@ def post_extract(request):
     else:
         target = extract_data.get('target')
         if not (target or uri):
-            raise HTTPClientError("No target")
+            raise HTTPBadRequest("No target")
 
         target_class = sqla.get_named_class(target.get('@type'))
         if issubclass(target_class, Post):
@@ -155,7 +153,7 @@ def post_extract(request):
         if not content:
             # TODO: maparent:  This is actually a singleton pattern, should be
             # handled by the AnnotatorSource now that it exists...
-            source = AnnotatorSource.db.query(AnnotatorSource).filter_by(
+            source = AnnotatorSource.default_db.query(AnnotatorSource).filter_by(
                 discussion_id=discussion_id).filter(
                 cast(AnnotatorSource.name, Unicode) == 'Annotator').first()
             if not source:
@@ -185,7 +183,7 @@ def post_extract(request):
         annotation_text=annotation_text,
         content=content
     )
-    Extract.db.add(new_extract)
+    Extract.default_db.add(new_extract)
 
     for range_data in extract_data.get('ranges', []):
         range = TextFragmentIdentifier(
@@ -194,8 +192,8 @@ def post_extract(request):
             offset_start=range_data['startOffset'],
             xpath_end=range_data['end'],
             offset_end=range_data['endOffset'])
-        TextFragmentIdentifier.db.add(range)
-    Extract.db.flush()
+        TextFragmentIdentifier.default_db.add(range)
+    Extract.default_db.flush()
 
     return {'ok': True, '@id': new_extract.uri()}
 
@@ -243,7 +241,7 @@ def put_extract(request):
     else:
         extract.idea = None
 
-    Extract.db.add(extract)
+    Extract.default_db.add(extract)
     #TODO: Merge ranges. Sigh.
 
     return {'ok': True}
@@ -277,7 +275,7 @@ def delete_extract(request):
         return HTTPNoContent()
 
     with transaction.manager:
-        Extract.db.delete(extract)
+        Extract.default_db.delete(extract)
     request.response.status = HTTPNoContent.code
     return HTTPNoContent()
 
@@ -285,21 +283,18 @@ def delete_extract(request):
 @search_extracts.get(permission=P_READ)
 def do_search_extracts(request):
     uri = request.GET['uri']
-    view_def = request.GET.get('view')
+    view_def = request.GET.get('view') or 'default'
     discussion_id = int(request.matchdict['discussion_id'])
     user_id = authenticated_userid(request)
     permissions = get_permissions(user_id, discussion_id)
 
     if not uri:
-        return HTTPClientError("Please specify a search uri")
+        return HTTPBadRequest("Please specify a search uri")
     content = Webpage.get_by(url=uri)
     if content:
-        extracts = Extract.db.query(Extract).filter_by(content=content).all()
-        if view_def:
-            rows = [
-                extract.generic_json(view_def, user_id, permissions)
-                for extract in extracts]
-        else:
-            rows = [extract.serializable() for extract in extracts]
+        extracts = Extract.default_db.query(Extract).filter_by(content=content).all()
+        rows = [
+            extract.generic_json(view_def, user_id, permissions)
+            for extract in extracts]
         return {"total": len(extracts), "rows": rows}
     return {"total": 0, "rows": []}

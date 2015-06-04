@@ -1,176 +1,7 @@
 'use strict';
 
-define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/ckeditorField', 'utils/permissions', 'utils/panelSpecTypes', 'views/messageSend', 'objects/messagesInProgress', 'views/notification', 'views/segmentList', 'common/collectionManager', 'views/assemblPanel', 'backbone.marionette', 'backbone.modal', 'backbone.marionette.modals', 'jquery', 'underscore'],
-    function (Assembl, Ctx, i18n, EditableField, CKEditorField, Permissions, PanelSpecTypes, MessageSendView, MessagesInProgress, Notification, SegmentList, CollectionManager, AssemblPanel, Marionette, backboneModal, marionetteModal, $, _) {
-
-        var IdeaPanelWidgets = Marionette.ItemView.extend({
-
-            // custom properties
-
-            inspiration_widget_create_url: null,
-            inspiration_widgets: null,
-            inspiration_widget_url: null,
-            inspiration_widget_configure_url: null,
-            vote_widget_create_url: null,
-            vote_widgets: null,
-
-
-            // overwritten properties and methods
-
-            template: '#tmpl-ideaPanelWidgets',
-            initialize: function (options) {
-                if (!this.model) {
-                    this.model = null;
-                }
-            },
-
-            modelEvents: {
-                'change': 'render'
-            },
-            ui: {
-                'modal': '.js_openTargetInModal'
-            },
-            events: {
-                'click @ui.modal': 'openTargetInModal'
-            },
-
-            serializeData: function () {
-                var currentUser = Ctx.getCurrentUser(),
-                    idea = null;
-
-                if (this.model) {
-                    //console.log("there is a model");
-                    idea = this.model;
-                }
-
-                return {
-                    ctx: Ctx,
-                    i18n: i18n,
-                    idea: idea,
-                    canUseWidget: currentUser.can(Permissions.ADD_POST),
-                    canCreateWidgets: currentUser.can(Permissions.ADMIN_DISCUSSION),
-                    inspiration_widget_create_url: this.inspiration_widget_create_url,
-                    inspiration_widgets: this.inspiration_widgets,
-                    inspiration_widget_url: this.inspiration_widget_url,
-                    inspiration_widget_configure_url: this.inspiration_widget_configure_url,
-                    vote_widget_create_url: this.vote_widget_create_url,
-                    vote_widgets: this.vote_widgets
-                };
-            },
-
-            onRender: function(){
-                this.populateAssociatedWidgetData();
-            },
-
-
-            // custom methods
-
-            clearWidgetDataAssociatedToIdea: function () {
-                // console.log("clearWidgetDataAssociatedToIdea()");
-                this.resetAssociatedWidgetData();
-                /* In case once the admin deletes the widget after having opened the configuration modal,
-                 we have to invalidate widget data for this idea and all its sub-ideas recursively.
-                 So to make it more simple we invalidate all widget data. */
-                Ctx.invalidateWidgetDataAssociatedToIdea("all");
-            },
-
-            resetAssociatedWidgetData: function() {
-                this.inspiration_widget_create_url = null;
-                this.inspiration_widgets = null;
-                this.inspiration_widget_url = null;
-                this.inspiration_widget_configure_url = null;
-                this.vote_widget_create_url = null;
-                this.vote_widgets = null;
-            },
-
-            populateAssociatedWidgetData: function () {
-                if (this.model) {
-                    var that = this;
-                    var previous = {};
-                    previous.inspiration_widget_create_url = that.inspiration_widget_create_url;
-                    previous.inspiration_widgets = that.inspiration_widgets;
-                    previous.inspiration_widget_url = that.inspiration_widget_url;
-                    previous.inspiration_widget_configure_url = that.inspiration_widget_configure_url;
-                    previous.vote_widget_create_url = that.vote_widget_create_url;
-                    previous.vote_widgets = that.vote_widgets;
-                    var promise = Ctx.getWidgetDataAssociatedToIdeaPromise(this.model.getId());
-                    promise.done(
-                        function (data) {
-                            //console.log("populateAssociatedWidgetData received data: ", data);
-
-                            that.resetAssociatedWidgetData();
-
-                            if ("inspiration_widget_create_url" in data) {
-                                that.inspiration_widget_create_url = data.inspiration_widget_create_url;
-                            }
-
-                            if ("inspiration_widgets" in data) {
-                                that.inspiration_widgets = data.inspiration_widgets;
-                            }
-
-                            if ("inspiration_widget_url" in data) {
-                                that.inspiration_widget_url = data.inspiration_widget_url;
-                            }
-
-                            if ("inspiration_widget_configure_url" in data) {
-                                that.inspiration_widget_configure_url = data.inspiration_widget_configure_url;
-                                //console.log("inspiration_widget_configure_url: ", data.inspiration_widget_configure_url);
-                            }
-
-                            if ("vote_widget_create_url" in data) {
-                                that.vote_widget_create_url = data.vote_widget_create_url;
-                                //console.log("vote_widget_create_url: ", data.vote_widget_create_url);
-                            }
-
-                            if ("vote_widgets" in data) {
-                                that.vote_widgets = data.vote_widgets;
-                                //console.log("vote_widgets: ", data.vote_widgets);
-                            }
-
-                            if (
-                                previous.inspiration_widget_create_url != that.inspiration_widget_create_url
-                                || previous.inspiration_widgets != that.inspiration_widgets
-                                || previous.inspiration_widget_url != that.inspiration_widget_url
-                                || previous.inspiration_widget_configure_url != that.inspiration_widget_configure_url
-                                || previous.vote_widget_create_url != that.vote_widget_create_url
-                                || previous.vote_widgets != that.vote_widgets
-                            ) {
-
-                                that.render();
-                            }
-                        }
-                    );
-                }
-
-            },
-
-            openTargetInModal: function (evt) {
-                var that = this;
-                var onDestroyCallback = function () {
-                    //console.log("openTargetInModal onDestroyCallback()");
-                    setTimeout(function () {
-                        //Ctx.invalidateWidgetDataAssociatedToIdea("all");
-                        that.clearWidgetDataAssociatedToIdea();
-                        //that.fetchModelAndRender();
-                        that.render();
-                    }, 0);
-                };
-                var options = {
-                    footer: false
-                };
-                if (evt && evt.currentTarget && $(evt.currentTarget).hasClass("js_clearWidgetDataAssociatedToIdea"))
-                {
-                    //console.log("openTargetInModal has js_clearWidgetDataAssociatedToIdea");
-                    return Ctx.openTargetInModal(evt, onDestroyCallback, options);
-                }
-                else
-                {
-                    //console.log("openTargetInModal has not js_clearWidgetDataAssociatedToIdea");
-                    return Ctx.openTargetInModal(evt, null, options);
-                }
-            }
-
-        });
+define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/ckeditorField', 'utils/permissions', 'utils/panelSpecTypes', 'views/messageSend', 'objects/messagesInProgress', 'views/notification', 'views/segmentList', 'views/ideaWidgets', 'common/collectionManager', 'views/assemblPanel', 'backbone.marionette', 'backbone.modal', 'backbone.marionette.modals', 'jquery', 'underscore', 'bluebird'],
+    function (Assembl, Ctx, i18n, EditableField, CKEditorField, Permissions, PanelSpecTypes, MessageSendView, MessagesInProgress, Notification, SegmentList, IdeaWidgets, CollectionManager, AssemblPanel, Marionette, backboneModal, marionetteModal, $, _, Promise) {
 
         var IdeaPanel = AssemblPanel.extend({
             template: '#tmpl-ideaPanel',
@@ -181,7 +12,7 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
             gridSize: AssemblPanel.prototype.IDEA_PANEL_GRID_SIZE,
             minWidth: 270,
             regions: {
-                //segmentList: ".postitlist"
+                segmentList: ".postitlist",
                 widgetsInteraction: ".ideaPanel-section-widgets"
             },
             initialize: function (options) {
@@ -203,6 +34,7 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     that.showSegment(segment);
                 });
 
+
             },
             ui: {
                 'postIt': '.postitlist',
@@ -220,8 +52,8 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                 'change': 'render'
             },
             events: {
-                'dragstart .bx': 'onDragStart',
-                'dragend .bx': "onDragEnd",
+                'dragstart .bx.postit': 'onDragStart',
+                'dragend .bx.postit': "onDragEnd",
                 'dragover': 'onDragOver',
                 'dragleave': 'onDragLeave',
                 'drop': 'onDrop',
@@ -231,7 +63,8 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                 'click @ui.seeMore': 'seeMoreOrLess',
                 'click @ui.seeLess': 'seeMoreOrLess',
                 'click @ui.definition': 'editDefinition',
-                'click @ui.longTitle': 'editTitle'
+                'click @ui.longTitle': 'editTitle',
+                'click .js_openTargetInPopOver': 'openTargetInPopOver'
             },
 
             getTitle: function () {
@@ -239,15 +72,6 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
             },
 
             tooltip: i18n.gettext('Detailled information about the currently selected idea in the Table of ideas'),
-
-            resetView: function () {
-              if(this.segmentList !== undefined) {
-                this.segmentList.reset();
-              }
-              else {
-                console.log("ideaPanel::resetView called, but region doesn't exist");
-              }
-            },
 
             /**
              * This is not inside the template because babel wouldn't extract it in
@@ -302,19 +126,22 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     currentUser = Ctx.getCurrentUser(),
                     canEdit = currentUser.can(Permissions.EDIT_IDEA) || false,
                     canEditNextSynthesis = currentUser.can(Permissions.EDIT_SYNTHESIS),
-                    contributors = null;
+                    contributors = null,
+                    direct_link_relative_url = null,
+                    share_link_url = null;
 
                 if (this.model) {
-                    //console.log("there is a model");
                     subIdeas = this.model.getChildren();
                     contributors = this.model.get('contributors');
-                }
-                else
-                {
-                    //console.log("there is no model");
+
+                    direct_link_relative_url = Ctx.getRelativeURLFromDiscussionRelativeURL("idea/" + encodeURIComponent(this.model.get('@id')));
+                    //share_link_url = "/static/js/bower/expando/add/index.htm?u=" +
+                    share_link_url = "/static/widget/share/index.html?u=" +
+                        encodeURIComponent(Ctx.getAbsoluteURLFromRelativeURL(direct_link_relative_url)) + "&t=" +
+                        encodeURIComponent(this.model.get('shortTitle'));
                 }
 
-                var dataset = {
+                return {
                     idea: this.model,
                     contributors: contributors,
                     subIdeas: subIdeas,
@@ -329,10 +156,11 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     canAddExtracts: currentUser.can(Permissions.EDIT_EXTRACT), //TODO: This is a bit too coarse
                     Ctx: Ctx,
                     editingDefinition: this.editingDefinition,
-                    editingTitle: this.editingTitle
+                    editingTitle: this.editingTitle,
+                    direct_link_relative_url: direct_link_relative_url,
+                    share_link_url: share_link_url
                 };
 
-                return dataset;
             },
 
             onRender: function () {
@@ -342,8 +170,6 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                 Ctx.removeCurrentlyDisplayedTooltips(this.$el);
 
                 Ctx.initTooltips(this.$el);
-
-                Ctx.initClipboard();
 
                 if (this.model && this.model.id  && this.extractListSubset) { 
                   //Only fetch extracts if idea already has an id.
@@ -362,15 +188,15 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     this.onTruncate();
 
                     if (this.editingDefinition) {
-                        this.renderCKEditorDefinition();
+                        this.renderCKEditorDescription();
                     }
 
                     if (this.editingTitle) {
                         this.renderCKEditorLongTitle();
                     }
 
-                    var ideaPanelWidgets = new IdeaPanelWidgets({model: this.model});
-                    this.widgetsInteraction.show(ideaPanelWidgets);
+                    var ideaWidgets = new IdeaWidgets({model: this.model});
+                    this.widgetsInteraction.show(ideaWidgets);
                 }
 
             },
@@ -380,22 +206,18 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     collectionManager = new CollectionManager();
 
                 if (this.extractListSubset) {
-                    $.when(
-                        collectionManager.getAllExtractsCollectionPromise(),
-                        collectionManager.getAllUsersCollectionPromise(),
-                        collectionManager.getAllMessageStructureCollectionPromise()
-                    ).then(
+                    Promise.join(collectionManager.getAllExtractsCollectionPromise(),
+                                collectionManager.getAllUsersCollectionPromise(),
+                                collectionManager.getAllMessageStructureCollectionPromise(),
                         function (allExtractsCollection, allUsersCollection, allMessagesCollection) {
+
                             that.extractListView = new SegmentList.SegmentListView({
                                 collection: that.extractListSubset,
                                 allUsersCollection: allUsersCollection,
                                 allMessagesCollection: allMessagesCollection
                             });
 
-                            //TODO: override show method to remove dom before inject
-                            that.ui.postIt.html(that.extractListView.render().el);
-                            //that.segmentList.show(that.extractListView);
-
+                            that.getRegion('segmentList').show(that.extractListView);
                             that.renderTemplateGetExtractsLabel();
                         });
                 } else {
@@ -407,7 +229,6 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
 
                 var currentUser = Ctx.getCurrentUser(),
                     canEdit = currentUser.can(Permissions.EDIT_IDEA) || false,
-                    canEditNextSynthesis = currentUser.can(Permissions.EDIT_SYNTHESIS),
                     modelId = this.model.id,
                     partialMessage = MessagesInProgress.getMessage(modelId);
 
@@ -417,33 +238,25 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     'class': 'panel-editablearea text-bold',
                     'data-tooltip': i18n.gettext('Short expression (only a few words) of the idea in the table of ideas.'),
                     'placeholder': i18n.gettext('New idea'),
-                    'canEdit': canEdit
+                    'canEdit': canEdit,
+                    'focus': this.focusShortTitle
                 });
                 shortTitleField.renderTo(this.$('#ideaPanel-shorttitle'));
 
-                // the content is replace by CKEditorField not necessary to init with
-                /*this.longTitleField = new CKEditorField({
-                    'model': this.model,
-                    'modelProp': 'longTitle',
-                    'placeholder': this.model.getLongTitleDisplayText(),
-                    'canEdit': canEditNextSynthesis,
-                    'showPlaceholderOnEditIfEmpty': true
-                });*/
-                //this.longTitleField.renderTo(this.$('.ideaPanel-longtitle'));
-
-                this.commentView = new MessageSendView({
+                var commentView = new MessageSendView({
                     'allow_setting_subject': false,
-                    'reply_idea_id': this.model.getId(),
+                    'reply_idea': this.model,
                     'body_help_message': i18n.gettext('Comment on this idea here...'),
                     'send_button_label': i18n.gettext('Send your comment'),
                     'subject_label': null,
                     'msg_in_progress_body': partialMessage['body'],
                     'msg_in_progress_ctx': modelId,
                     'mandatory_body_missing_msg': i18n.gettext('You need to type a comment first...'),
-                    'mandatory_subject_missing_msg': null
+                    'mandatory_subject_missing_msg': null,
+                    'enable_button': false
                     //TODO:  Pass the messageListView that is expected to refresh with the new comment
                 });
-                this.$('#ideaPanel-comment').append(this.commentView.render().el);
+                this.$('#ideaPanel-comment').html(commentView.render().el);
 
             },
 
@@ -454,9 +267,12 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
             addSegment: function (segment) {
                 delete segment.attributes.highlights;
 
-                var id = this.model.getId();
+                var id = this.model.getId(),
+                    that = this;
                 segment.save('idIdea', id, {
-                    success: function (model, reps) {
+                    success: function (model, resp) {
+                        //console.debug('SUCCESS: addSegment', resp);
+                        that.extractListView.render();
                     },
                     error: function (model, resp) {
                         console.error('ERROR: addSegment', resp);
@@ -475,8 +291,8 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     box,
                     collectionManager = new CollectionManager();
 
-                collectionManager.getAllIdeasCollectionPromise().done(
-                    function (allIdeasCollection) {
+                collectionManager.getAllIdeasCollectionPromise()
+                    .then(function (allIdeasCollection) {
                         var idea = allIdeasCollection.get(idIdea);
                         if (!idea) {
                             return;
@@ -509,9 +325,14 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
              * Set the given idea as the current one
              * @param  {Idea} [idea=null]
              */
-            setIdeaModel: function (idea) {
-                var that = this,
-                    collectionManager = new CollectionManager();
+            setIdeaModel: function (idea, reason) {
+                var that = this;
+
+                if ( reason === "created" ){
+                    this.focusShortTitle = true;
+                }else {
+                    this.focusShortTitle = false;
+                }
 
                 //console.log("setIdeaModel called with", idea);
                 if (idea !== this.model) {
@@ -537,7 +358,7 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                             // model has acquired an ID. Reset everything.
                             var model = that.model;
                             that.model = null;
-                            that.setIdeaModel(model);
+                            that.setIdeaModel(model, reason);
                         });
                         if (this.model.id) {
                             //Ctx.openPanel(assembl.ideaPanel);
@@ -551,7 +372,8 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                         //on if the panel was opened by selection, or by something else.
                         //app.closePanel(app.ideaPanel);
                         //this.resetView();
-                        //this.render();
+                      //If we don't call render here, the panel will not refresh if we delete an idea.
+                      this.render();
                     }
                 }
             },
@@ -561,7 +383,7 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     collectionManager = new CollectionManager();
                 var fetchPromise = this.model.fetch({ data: $.param({ view: 'contributors'}) });
                             
-                $.when(collectionManager.getAllExtractsCollectionPromise(), fetchPromise).then(
+                Promise.join(collectionManager.getAllExtractsCollectionPromise(), fetchPromise,
                     function (allExtractsCollection, fetchedJQHR) {
                         that.extractListSubset = new SegmentList.IdeaSegmentListSubset([], {
                             parent: allExtractsCollection,
@@ -584,10 +406,9 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     children = this.model.getChildren();
 
                 this.blockPanel();
-                $.when(
-                    this.model.getExtractsPromise()
-                ).then(
-                    function (ideaExtracts) {
+                this.model.getExtractsPromise()
+                    .then(function (ideaExtracts) {
+
                         that.unblockPanel();
                         if (children.length > 0) {
                             that.unblockPanel();
@@ -596,7 +417,12 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                         // Nor has any segments
                         else if (ideaExtracts.length > 0) {
                             that.unblockPanel();
+                            console.log(ideaExtracts);
                             alert(i18n.gettext('You cannot delete an idea associated to extracts.'));
+                        }
+                        else if(that.model.get('num_posts') > 0){
+                            that.unblockPanel();
+                            alert(i18n.gettext('You cannot delete an idea associated to comments.'));
                         }
                         else {
                             // That's a bingo
@@ -621,38 +447,65 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
             },
 
             onDragStart: function (ev) {
+                if (ev) {
+                    ev.stopPropagation();
+                }
+
                 var that = this,
                     collectionManager = new CollectionManager();
+
                 //TODO: Deal with editing own extract (EDIT_MY_EXTRACT)
-                collectionManager.getAllExtractsCollectionPromise().done(
-                    function (allExtractsCollection) {
-                        if (Ctx.getCurrentUser().can(Permissions.EDIT_EXTRACT)) {
-                            ev.currentTarget.style.opacity = 0.4;
+                if (Ctx.getCurrentUser().can(Permissions.EDIT_EXTRACT)) {
+                collectionManager.getAllExtractsCollectionPromise()
+                    .then(function (allExtractsCollection) {
+                        ev.currentTarget.style.opacity = 0.4;
 
-                            var cid = ev.currentTarget.getAttribute('data-segmentid'),
-                                segment = allExtractsCollection.getByCid(cid);
-                            Ctx.showDragbox(ev, segment.getQuote());
-                            Ctx.draggedSegment = segment;
-                        }
+                        ev.originalEvent.dataTransfer.effectAllowed = 'move';
+                        ev.originalEvent.dataTransfer.dropEffect = 'all';
+
+                        var cid = ev.currentTarget.getAttribute('data-segmentid'),
+                            segment = allExtractsCollection.getByCid(cid);
+
+                        Ctx.showDragbox(ev, segment.getQuote());
+                        Ctx.setDraggedSegment(segment);
+
                     });
-
+                }
             },
 
             onDragEnd: function (ev) {
-                ev.currentTarget.style.opacity = '';
-                Ctx.draggedSegment = null;
+                if (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
+                this.$el.removeClass('is-dragover');
+                ev.currentTarget.style.opacity = 1;
+                Ctx.setDraggedSegment(null);
+
             },
 
             onDragOver: function (ev) {
-                // console.log("ideaPanel:onDragOver() fired");
-                ev.preventDefault();
-                if (Ctx.draggedSegment !== null || Ctx.getDraggedAnnotation() !== null) {
+                if (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
+
+                if (ev.originalEvent) {
+                    ev = ev.originalEvent;
+                }
+
+                ev.dataTransfer.dropEffect = 'all';
+
+                if (Ctx.getDraggedSegment() !== null || Ctx.getDraggedAnnotation() !== null) {
                     this.$el.addClass("is-dragover");
                 }
             },
 
-            onDragLeave: function () {
-                //console.log("ideaPanel:onDragLeave() fired");
+            onDragLeave: function (ev) {
+                if (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
                 this.$el.removeClass('is-dragover');
             },
 
@@ -662,27 +515,33 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                     ev.preventDefault();
                     ev.stopPropagation();
                 }
+                this.$el.removeClass('is-dragover');
 
                 this.$el.trigger('dragleave');
 
                 var segment = Ctx.getDraggedSegment();
+
                 if (segment) {
                     this.addSegment(segment);
+                    Ctx.setDraggedSegment(null);
                 }
+
                 var annotation = Ctx.getDraggedAnnotation();
+
                 if (annotation) {
                     // Add as a segment
                     Ctx.currentAnnotationIdIdea = this.model.getId();
                     Ctx.currentAnnotationNewIdeaParentIdea = null;
                     Ctx.saveCurrentAnnotationAsExtract();
-                    return;
                 }
 
+                this.extractListView.render();
+
+                return;
             },
 
             onSegmentCloseButtonClick: function (ev) {
-                var that = this,
-                    cid = ev.currentTarget.getAttribute('data-segmentid'),
+                var cid = ev.currentTarget.getAttribute('data-segmentid'),
                     collectionManager = new CollectionManager();
                 collectionManager.getAllExtractsCollectionPromise().done(
                     function (allExtractsCollection) {
@@ -698,7 +557,7 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                 var ok = confirm(i18n.gettext('Confirm that you want to send all extracts back to the clipboard.'));
                 if (ok) {
                     // Clone first, because the operation removes extracts from the subset.
-                    var models = _.clone(this.extractList.models)
+                    var models = _.clone(this.extractListSubset.models)
                     _.each(models, function(extract) {
                         extract.set('idIdea', null);
                     });
@@ -770,50 +629,53 @@ define(['app', 'common/context', 'utils/i18n', 'views/editableField', 'views/cke
                 }
             },
 
-            renderCKEditorDefinition: function () {
+            renderCKEditorDescription: function () {
                 var that = this,
                     area = this.$('.ideaPanel-definition-editor');
 
-                var definitionText = this.model.getDefinitionDisplayText();
+                var model = this.model.getDefinitionDisplayText();
 
-                if (definitionText.length > 0) {
+                if (!model.length) return;
 
-                    this.definition = new CKEditorField({
-                        'model': this.model,
-                        'modelProp': 'definition'
-                    });
-                }
+                var description = new CKEditorField({
+                    'model': this.model,
+                    'modelProp': 'definition'
+                });
 
-                this.definition.on('save cancel', function () {
+                this.listenTo(description, 'save cancel', function(){
                     that.editingDefinition = false;
                     that.render();
                 });
 
-                this.definition.renderTo(area);
-                this.definition.changeToEditMode();
+                description.renderTo(area);
+                description.changeToEditMode();
             },
 
             renderCKEditorLongTitle: function () {
                 var that = this,
                     area = this.$('.ideaPanel-longtitle-editor');
 
-                var longTitle = this.model.getLongTitleDisplayText();
+                var model = this.model.getLongTitleDisplayText();
 
-                if (longTitle.length > 0) {
+                if (!model.length) return;
 
-                    this.shortTitle = new CKEditorField({
-                        'model': this.model,
-                        'modelProp': 'longTitle'
-                    });
-                }
+                var shortTitle = new CKEditorField({
+                    'model': this.model,
+                    'modelProp': 'longTitle'
+                });
 
-                this.shortTitle.on('save cancel', function () {
+                this.listenTo(shortTitle, 'save cancel', function(){
                     that.editingTitle = false;
                     that.render();
                 });
 
-                this.shortTitle.renderTo(area);
-                this.shortTitle.changeToEditMode();
+                shortTitle.renderTo(area);
+                shortTitle.changeToEditMode();
+            },
+
+            openTargetInPopOver: function (evt) {
+                console.log("ideaPanel openTargetInPopOver(evt: ", evt);
+                return Ctx.openTargetInPopOver(evt);
             }
 
         });

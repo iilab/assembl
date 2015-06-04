@@ -1,7 +1,7 @@
 'use strict';
 
-define(['underscore', 'models/base', 'common/context', 'utils/i18n', 'utils/types', 'utils/permissions'],
-    function (_, Base, Ctx, i18n, Types, Permissions) {
+define(['underscore', 'models/base', 'common/context', 'utils/i18n', 'utils/types', 'utils/permissions', 'bluebird'],
+    function (_, Base, Ctx, i18n, Types, Permissions, Promise) {
 
         /**
          * @class IdeaModel
@@ -313,18 +313,19 @@ define(['underscore', 'models/base', 'common/context', 'utils/i18n', 'utils/type
             },
 
             /** Return a promise for all Extracts models for this idea
-             * @return {$.Defered.Promise}
+             * @return {Promise}
              */
+
             getExtractsPromise: function () {
-                var that = this,
-                    deferred = $.Deferred();
-                this.collection.collectionManager.getAllExtractsCollectionPromise().done(
-                    function (allExtractsCollection) {
-                        var extracts = allExtractsCollection.where({idIdea: that.getId()});
-                        deferred.resolve(extracts);
+                var that = this;
+                return this.collection.collectionManager.getAllExtractsCollectionPromise()
+                    .then(function (allExtractsCollection) {
+                        return Promise.resolve(allExtractsCollection.where({idIdea: that.getId()}))
+                            .catch(function(e){
+                                console.error(e.statusText);
+                            });
                     }
                 );
-                return deferred.promise();
             },
 
             /**
@@ -437,6 +438,12 @@ define(['underscore', 'models/base', 'common/context', 'utils/i18n', 'utils/type
             },
             */
 
+            validate: function(attrs, options){
+                /**
+                 * check typeof variable
+                 * */
+
+            }
         });
 
         /**
@@ -461,12 +468,10 @@ define(['underscore', 'models/base', 'common/context', 'utils/i18n', 'utils/type
             getRootIdea: function () {
                 var retval = this.findWhere({ '@type': Types.ROOT_IDEA });
                 if (!retval) {
-                    console.log("Size: ", _.size(this.models));
                     _.forEach(this.models, function (model) {
                         console.log(model.get('@type'));
                     })
                     console.error("getRootIdea() failed!");
-                    console.log(this);
                 }
                 return retval;
             },

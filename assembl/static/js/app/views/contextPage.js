@@ -1,11 +1,11 @@
 'use strict';
 
-define(['backbone.marionette', 'app', 'common/context', 'common/collectionManager', 'jquery', 'underscore', 'd3', 'utils/i18n', 'moment', 'utils/permissions', 'utils/panelSpecTypes', 'views/assemblPanel', 'views/ckeditorField', 'utils/types', 'backbone.modal', 'backbone.marionette.modals', 'models/partners', 'models/discussion'],
-    function (Marionette, Assembl, Ctx, CollectionManager, $, _, d3, i18n, Moment, Permissions, PanelSpecTypes, AssemblPanel, CKEditorField, Types, backboneModal, marionetteModals, organization, Discussion) {
+define(['backbone.marionette', 'app', 'common/context', 'common/collectionManager', 'jquery', 'underscore', 'd3', 'utils/i18n', 'moment', 'utils/permissions', 'utils/panelSpecTypes', 'views/assemblPanel', 'views/ckeditorField', 'utils/types', 'bluebird', 'backbone.modal', 'backbone.marionette.modals'],
+    function (Marionette, Assembl, Ctx, CollectionManager, $, _, d3, i18n, Moment, Permissions, PanelSpecTypes, AssemblPanel, CKEditorField, Types, Promise, backboneModal, marionetteModals) {
 
         var Partner = Marionette.ItemView.extend({
             template: '#tmpl-partnerItem',
-            className: 'gu gu-2of7 mrl',
+            className: 'gu gu-2of7 partnersItem mrl',
             serializeData: function () {
                 return {
                     organization: this.model
@@ -22,29 +22,18 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
         });
 
         var PartnerList = Marionette.CompositeView.extend({
-            template: '#tmpl-loader',
+            template: '#tmpl-partnerList',
             childView: Partner,
             className:'gr mvxl',
             childViewContainer: '.partnersList',
-            initialize: function(){
-                var that = this,
-                    collectionManager = new CollectionManager();
+            initialize: function(options){
+                this.nbOrganisations = options.nbOrganisations;
 
-                this.collection = undefined;
-                this.nbOrganisations = 0;
+                this.collection.models = _.reject(this.collection.models, function(model){
+                    return model.get('is_initiator');
+                });
 
-                $.when(collectionManager.getAllPartnerOrganizationCollectionPromise()).
-                    then(function (DiscussionModel) {
-                        that.nbOrganisations = DiscussionModel.models.length;
-                        that.collection = DiscussionModel;
-                        that.template = '#tmpl-partnerList';
-                        if(that.childViewContainer){
-                            that.render();
-                        }
-
-                    });
             },
-
             serializeData: function(){
                 return {
                     userCanEditDiscussion: Ctx.getCurrentUser().can(Permissions.ADMIN_DISCUSSION),
@@ -57,42 +46,24 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
 
         var Synthesis = Marionette.ItemView.extend({
             template: '#tmpl-synthesisContext',
-            initialize: function () {
-                var that = this,
-                    collectionManager = new CollectionManager();
+            initialize: function (options) {
+              var that = this;
 
-                this.model = new Backbone.Model();
+              this.model = new Backbone.Model();
 
-                $.when(collectionManager.getAllMessageStructureCollectionPromise(),
-                    collectionManager.getAllSynthesisCollectionPromise()).then(
-                    function (allMessageStructureCollection, allSynthesisCollection) {
-
-                        var synthesisMessages = allMessageStructureCollection.where({'@type': Types.SYNTHESIS_POST});
-                        if (synthesisMessages.length > 0) {
-                            _.sortBy(synthesisMessages, function (message) {
-                                return message.get('date');
-                            });
-                            synthesisMessages.reverse();
-
-                            _.each(synthesisMessages, function (message, index) {
-                                if (index === 0) {
-                                    var all = allSynthesisCollection.get(message.get('publishes_synthesis'));
-
-                                    that.model.set({
-                                        creation_date: message.get('date'),
-                                        introduction: all.get('introduction')
-                                    })
-                                }
-                            })
-                        }
-                        else {
-                            that.model.set({
-                                empty: i18n.gettext("No synthesis of the discussion has been published yet")
-                            });
-                        }
-
-
-                    });
+              var synthesisMessage = options.allMessageStructureCollection.getLastSynthesisPost();
+              if (synthesisMessage) {
+                var synthesis = options.allSynthesisCollection.get(synthesisMessage.get('publishes_synthesis'));
+                this.model.set({
+                  creation_date: synthesisMessage.get('date'),
+                  introduction: synthesis.get('introduction')
+                  });
+              }
+              else {
+                this.model.set({
+                  empty: i18n.gettext("No synthesis of the discussion has been published yet")
+                });
+              }
             },
 
             events: {
@@ -827,12 +798,11 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                 var collectionManager = new CollectionManager();
                 //var users = collectionManager.getAllUsersCollectionPromise();
 
-                $.when(collectionManager.getAllUsersCollectionPromise(),
-                    collectionManager.getAllMessageStructureCollectionPromise()
-                ).then(function (allUsersCollection, allMessagesCollection) {
+                Promise.join(collectionManager.getAllUsersCollectionPromise(),
+                             collectionManager.getAllMessageStructureCollectionPromise(),
+                    function (allUsersCollection, allMessagesCollection) {
                         // console.log("collections allUsersCollection, allMessagesCollection are loaded");
                         // console.log(allMessagesCollection);
-
                         if (allMessagesCollection.size() == 0) {
                             var chart_div = that.$('.chart');
                             chart_div.html(i18n.gettext("Not enough data yet."));
@@ -1056,7 +1026,7 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                         }
 
                         var pie_chart_data = [
-                            "the title of the first element is purposely not used, only its data is used", //"posted since the beginning of the debate",
+                            "the title of the first element is purposely not used, only its data is used", //"posted since the beginning of the discussion",
                             authors_total,
                             messages_total,
                             "",
@@ -1110,8 +1080,8 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                             null,
                             null,
                             i18n.sprintf(i18n.ngettext(
-                                "%d participant has contributed since the beginning of the debate",
-                                "%d participants have contributed since the beginning of the debate",
+                                "%d participant has contributed since the beginning of the discussion",
+                                "%d participants have contributed since the beginning of the discussion",
                                 authors_total), authors_total),
                             null,
                             authors_total,
@@ -1147,7 +1117,11 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                 var count = 0;
                 var sz = messages.length;
                 var date_threshold_min = messages[0].date;
-                var date_threshold_max = messages[sz - 1].date; // or we could want it to be today
+                // date_threshold_max could be set to:
+                // - messages[sz - 1].date (but hen there may be a problem with timezones which would not include lastest messages, and the period would not be "last week" but "the 7 days which end with the last contribution" => the metric becomes more difficult to understand)
+                // - today (but the statistics would not be totally accurate because the x days period would in fact vary of a maximum of one day, except if we filter messages precisely using their timezone-aware time instead of using per-day totals)
+                // - yesterday (but then how would we consider today's authors? => the metric becomes more difficult to understand)
+                var date_threshold_max = new Date().toISOString();
                 var threshold_passed = false;
                 for (var i = sz - 1; i >= 0; --i) {
                     count += messages[i]['value'];
@@ -1224,21 +1198,8 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
         });
 
         var Instigator = Marionette.ItemView.extend({
-            template: '#tmpl-loader',
+            template: '#tmpl-instigator',
             initialize: function(){
-                var that = this,
-                    collectionManager = new CollectionManager();
-
-                this.instigator = undefined;
-
-                $.when(collectionManager.getAllPartnerOrganizationCollectionPromise()).then(function(partners){
-                    that.instigator = _.find(partners.models, function(partner){
-                        return partner.get('is_initiator');
-                    });
-                    that.template = '#tmpl-instigator';
-                    that.render();
-                });
-
                 this.editInstigator = false;
             },
 
@@ -1251,10 +1212,8 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
             },
 
             serializeData: function () {
-                var isConnected = (Ctx.getCurrentUserId()) ? true : false;
-
                 return {
-                   instigator: this.instigator,
+                   instigator: this.model,
                    editInstigator: this.editInstigator,
                    Ctx: Ctx,
                    userCanEditDiscussion: Ctx.getCurrentUser().can(Permissions.ADMIN_DISCUSSION)
@@ -1271,26 +1230,21 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                 var that = this,
                     area = this.$('.instigator-editor');
 
-                var uri = this.instigator.id.split('/')[1];
-                this.instigator.url = Ctx.getApiV2DiscussionUrl('partner_organizations/') + uri;
+                var uri = this.model.id.split('/')[1];
+                this.model.url = Ctx.getApiV2DiscussionUrl('partner_organizations/') + uri;
 
-                var descriptionText = this.instigator.get('description');
+                var instigator = new CKEditorField({
+                    'model': this.model,
+                    'modelProp': 'description'
+                });
 
-                if (descriptionText.length > 0) {
-
-                    this.description = new CKEditorField({
-                        'model': this.instigator,
-                        'modelProp': 'description'
-                    });
-                }
-
-                this.description.on('save cancel', function () {
+                this.listenTo(instigator, 'save cancel', function(){
                     that.editInstigator = false;
                     that.render();
                 });
 
-                this.description.renderTo(area);
-                this.description.changeToEditMode();
+                instigator.renderTo(area);
+                instigator.changeToEditMode();
             },
 
             editDescription: function(){
@@ -1311,28 +1265,19 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
         });
 
         var Introduction = Marionette.ItemView.extend({
-            template: '#tmpl-loader',
+            template: '#tmpl-introductions',
             initialize: function(){
                 this.editingIntroduction = false;
                 this.editingObjective = false;
-
-                this.model = undefined;
-
-                var that = this,
-                    collectionManager = new CollectionManager();
-
-                $.when(collectionManager.getDiscussionModelPromise()).then(function (DiscussionModel) {
-                    that.model = DiscussionModel;
-                    that.template = '#tmpl-introductions';
-                    that.render();
-                });
             },
 
             ui: {
                 introduction: '.js_editIntroduction',
                 objective: '.js_editObjective',
                 seeMoreIntro: '.js_introductionSeeMore',
-                seeMoreObjectives: '.js_objectivesSeeMore'
+                seeMoreObjectives: '.js_objectivesSeeMore',
+                introductionEditor: '.context-introduction-editor',
+                objectiveEditor: '.context-objective-editor'
             },
 
             events: {
@@ -1352,7 +1297,8 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
             },
 
             onRender: function(){
-              if(this.model) {
+                var that = this;
+
                 if (this.editingIntroduction) {
                     this.renderCKEditorIntroduction();
                 }
@@ -1360,25 +1306,32 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                 if (this.editingObjective) {
                     this.renderCKEditorObjective();
                 }
-                //console.log("Just rendered with model, aplying elipsis");
-                this.applyEllipsisToSection(".context-introduction", this.ui.seeMoreIntro);
-                this.applyEllipsisToSection(".context-objective", this.ui.seeMoreObjectives);
-              }
+
+                setTimeout(function(){
+                    that.applyEllipsisToSection('.context-introduction', that.ui.seeMoreIntro);
+                    that.applyEllipsisToSection('.context-objective', that.ui.seeMoreObjectives);
+                },0);
+
             },
 
             seeMore: function (e) {
                 e.stopPropagation();
-                $.when(Ctx.getDiscussionPromise()).then(function (discussion) {
+
+                var collectionManager = new CollectionManager();
+
+                collectionManager.getDiscussionModelPromise()
+                    .then(function (discussion) {
+
                     if($(e.target).hasClass('js_introductionSeeMore')) {
                         var model = new Backbone.Model({
-                            content: discussion.introduction,
+                            content: discussion.get('introduction'),
                             title: i18n.gettext('Context')
                         });
                     }
                     else if($(e.target).hasClass('js_objectivesSeeMore')) {
                         var model = new Backbone.Model({
-                            content: discussion.objectives,
-                            title: i18n.gettext('Debate objectives')
+                            content: discussion.get('objectives'),
+                            title: i18n.gettext('Discussion objectives')
                         });
                     }
                     else {
@@ -1414,63 +1367,56 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                 var that = this,
                     area = this.$('.context-introduction-editor');
 
-                var introduction = this.model.get('introduction');
-
-                this.introField = new CKEditorField({
+                var introduction = new CKEditorField({
                     'model': this.model,
                     'modelProp': 'introduction'
                 });
 
-                this.introField.on('save cancel', function () {
+                this.listenTo(introduction, 'save cancel', function(){
                     that.editingIntroduction = false;
                     that.render();
                 });
 
-                this.introField.renderTo(area);
-                this.introField.changeToEditMode();
+                introduction.renderTo(area);
+                introduction.changeToEditMode();
             },
 
             renderCKEditorObjective: function () {
                 var that = this,
                     area = this.$('.context-objective-editor');
 
-                var objective = this.model.get('objectives');
-
-                this.objectiveField = new CKEditorField({
+                var objective = new CKEditorField({
                     'model': this.model,
                     'modelProp': 'objectives'
                 });
 
-                this.objectiveField.on('save cancel', function () {
+                this.listenTo(objective, 'save cancel', function(){
                     that.editingObjective = false;
                     that.render();
                 });
 
-                this.objectiveField.renderTo(area);
-                this.objectiveField.changeToEditMode();
+                objective.renderTo(area);
+                objective.changeToEditMode();
             },
 
             applyEllipsisToSection: function(sectionSelector, seemoreUi){
                 /* We use https://github.com/MilesOkeefe/jQuery.dotdotdot to show
                  * Read More links for introduction preview
                  */
-                var that = this;
-                setTimeout(function(){
-                    that.$(sectionSelector).dotdotdot({
-                        after: seemoreUi,
-                        height: 170,
-                        callback: function (isTruncated, orgContent) {
-                            //console.log("dotdotdot callback: ", isTruncated, orgContent);
-                            if (isTruncated) {
-                                seemoreUi.show();
-                            }
-                            else {
-                                seemoreUi.hide();
-                            }
-                        },
-                        watch: "window"
-                    });
-                }, 10);
+                $(sectionSelector).dotdotdot({
+                    after: seemoreUi,
+                    height: 170,
+                    callback: function (isTruncated, orgContent) {
+                        if (isTruncated) {
+                            seemoreUi.show();
+                        }
+                        else {
+                            seemoreUi.hide();
+                        }
+                    },
+                    watch: "window"
+                });
+
             }
 
         });
@@ -1478,7 +1424,7 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
         var ContextPage = Marionette.LayoutView.extend({
             template: '#tmpl-contextPage',
             panelType: PanelSpecTypes.DISCUSSION_CONTEXT,
-            className: 'homePanel',
+            className: 'contextPanel',
             gridSize: AssemblPanel.prototype.CONTEXT_PANEL_GRID_SIZE,
             hideHeader: true,
             getTitle: function () {
@@ -1493,18 +1439,47 @@ define(['backbone.marionette', 'app', 'common/context', 'common/collectionManage
                 introductions: '#context-introduction'
             },
 
-            onRender: function () {
-                var partners = new PartnerList(),
-                    synthesis = new Synthesis(),
-                    statistics = new Statistics(),
-                    instigator = new Instigator(),
-                    introduction = new Introduction();
+            onBeforeShow: function(){
+                var that = this,
+                    collectionManager = new CollectionManager();
 
-                this.introductions.show(introduction);
-                this.instigator.show(instigator);
-                this.statistics.show(statistics);
-                this.synthesis.show(synthesis);
-                this.organizations.show(partners);
+                Promise.join(collectionManager.getDiscussionModelPromise(),
+                    collectionManager.getAllPartnerOrganizationCollectionPromise(),
+                    collectionManager.getAllMessageStructureCollectionPromise(),
+                    collectionManager.getAllSynthesisCollectionPromise(),
+
+                    function (DiscussionModel, AllPartner, allMessageStructureCollection, allSynthesisCollection) {
+
+                    var partnerInstigator =  AllPartner.find(function (partner) {
+                        return partner.get('is_initiator');
+                    });
+
+                    var introduction = new Introduction({
+                        model: DiscussionModel
+                    });
+                    that.getRegion('introductions').show(introduction);
+
+                    var instigator = new Instigator({
+                        model: partnerInstigator
+                    });
+                    that.getRegion('instigator').show(instigator);
+
+                    that.getRegion('statistics').show(new Statistics());
+
+                    var synthesis = new Synthesis({
+                        allMessageStructureCollection: allMessageStructureCollection,
+                        allSynthesisCollection: allSynthesisCollection
+                    });
+                    that.getRegion('synthesis').show(synthesis);
+
+                    var partners = new PartnerList({
+                        nbOrganisations: _.size(AllPartner),
+                        collection: AllPartner
+                    });
+                    that.getRegion('organizations').show(partners);
+
+                });
+
             }
 
         });

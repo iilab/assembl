@@ -5,18 +5,15 @@ from sqlalchemy.sql.expression import and_
 from pyramid.security import (
     authenticated_userid, Everyone, Authenticated)
 from pyramid.httpexceptions import HTTPNotFound
-from pyramid.i18n import TranslationStringFactory
 from pyisemail import is_email
 
+from assembl.lib.locale import _, get_localizer
 from ..lib.sqla import get_session_maker
 from . import R_SYSADMIN, P_READ, SYSTEM_ROLES
 from ..models.auth import (
     User, Role, UserRole, LocalUserRole, Permission,
     DiscussionPermission, IdentityProvider, AgentProfile,
     EmailAccount)
-
-
-_ = TranslationStringFactory('assembl')
 
 
 def get_user(request):
@@ -43,13 +40,20 @@ def get_roles(user_id, discussion_id=None):
 
 def get_permissions(user_id, discussion_id):
     session = get_session_maker()()
-    if user_id in (Everyone, Authenticated):
+    if user_id == Everyone:
         if not discussion_id:
             return []
         permissions = session.query(Permission.name).join(
             DiscussionPermission, Role).filter(
                 (DiscussionPermission.discussion_id == discussion_id)
                 & (Role.name == user_id))
+    elif user_id == Authenticated:
+        if not discussion_id:
+            return []
+        permissions = session.query(Permission.name).join(
+            DiscussionPermission, Role).filter(
+                (DiscussionPermission.discussion_id == discussion_id)
+                & (Role.name.in_((Authenticated, Everyone))))
     else:
         sysadmin = session.query(UserRole).filter_by(
             user_id=user_id).join(Role).filter_by(name=R_SYSADMIN).first()
@@ -106,7 +110,7 @@ def get_current_discussion():
 
 def authentication_callback(user_id, request):
     "This is how pyramid knows the user's permissions"
-    connection = User.db().connection()
+    connection = User.default_db.connection()
     connection.info['userid'] = user_id
     discussion = discussion_from_request(request)
     discussion_id = discussion.id if discussion else None
@@ -123,12 +127,17 @@ def authentication_callback(user_id, request):
 
 def discussions_with_access(userid, permission=P_READ):
     from ..models import Discussion
-    db = Discussion.db()
-    if userid in (Authenticated, Everyone):
+    db = Discussion.default_db
+    if userid == Everyone:
         return db.query(Discussion).join(
             DiscussionPermission, Role, Permission).filter(and_(
                 Permission.name == permission,
                 Role.name == userid))
+    elif userid == Authenticated:
+        return db.query(Discussion).join(
+            DiscussionPermission, Role, Permission).filter(and_(
+                Permission.name == permission,
+                Role.name.in_((Authenticated, Everyone))))
     else:
         sysadmin = db.query(UserRole).filter_by(
             user_id=userid).join(Role).filter_by(name=R_SYSADMIN).first()
@@ -158,12 +167,19 @@ def discussions_with_access(userid, permission=P_READ):
 def user_has_permission(discussion_id, user_id, permission):
     from ..models import Discussion
     # assume all ids valid
-    db = Discussion.db()
-    if user_id in (Authenticated, Everyone):
+    db = Discussion.default_db
+    if user_id == Everyone:
         permission = db.query(DiscussionPermission).join(
             Permission, Role).filter(
                 DiscussionPermission.discussion_id == discussion_id).filter(
                     Role.name == user_id).filter(
+                        Permission.name == permission).first()
+        return permission is not None
+    elif user_id == Authenticated:
+        permission = db.query(DiscussionPermission).join(
+            Permission, Role).filter(
+                DiscussionPermission.discussion_id == discussion_id).filter(
+                    Role.name.in_((Authenticated, Everyone))).filter(
                         Permission.name == permission).first()
         return permission is not None
     sysadmin = db.query(UserRole).filter_by(
@@ -198,7 +214,7 @@ def user_has_permission(discussion_id, user_id, permission):
 def users_with_permission(discussion_id, permission, id_only=True):
     from ..models import Discussion
     # assume all ids valid
-    db = Discussion.db()
+    db = Discussion.default_db
     user_ids = db.query(User.id).join(
         LocalUserRole, Role, DiscussionPermission, Permission).filter(and_(
         Permission.name == permission,
@@ -229,7 +245,7 @@ def get_identity_provider(request, create=True):
     trusted = request.registry.settings['trusted_login_providers']
     provider = None
     session = get_session_maker()()
-    provider = IdentityProvider.db.query(IdentityProvider).filter_by(
+    provider = IdentityProvider.default_db.query(IdentityProvider).filter_by(
         provider_type=auth_context.provider_type,
         name=auth_context.provider_name
     ).first()
@@ -249,9 +265,9 @@ def add_user(name, email, password, role, force=False, username=None,
              localrole=None, discussion=None, change_old_password=True,
              **kwargs):
     from assembl.models import Discussion, Username
-    db = Discussion.db()
+    db = Discussion.default_db
     # refetch within transaction
-    all_roles = {r.name: r for r in Role.db.query(Role).all()}
+    all_roles = {r.name: r for r in Role.default_db.query(Role).all()}
     user = None
     if discussion and localrole:
         if isinstance(discussion, (str, unicode)):
@@ -300,14 +316,14 @@ def add_user(name, email, password, role, force=False, username=None,
                 preferred_email=email,
                 verified=True,
                 password=password,
-                creation_date=datetime.now())
+                creation_date=datetime.utcnow())
         else:
             user = User(
                 name=name,
                 preferred_email=email,
                 verified=True,
                 password=password,
-                creation_date=datetime.now())
+                creation_date=datetime.utcnow())
         db.add(user)
         if username:
             db.add(Username(username=username, user=user))
@@ -343,8 +359,9 @@ def add_user(name, email, password, role, force=False, username=None,
         user.get_notification_subscriptions(discussion.id)
 
 
-def add_multiple_users_csv(csv_file, discussion_id, with_role, localizer):
+def add_multiple_users_csv(csv_file, discussion_id, with_role):
     r = reader(csv_file)
+    localizer = get_localizer()
     for i, l in enumerate(r):
         if not len(l):
             # tolerate empty lines

@@ -1,7 +1,7 @@
 'use strict';
 
-define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notification', 'views/navigation/home', 'views/navigation/synthesisInNavigation', 'views/navigation/linkListView', 'views/assemblPanel', 'common/context', 'utils/permissions', 'jquery', 'utils/panelSpecTypes', 'jed'],
-    function (Assembl, Marionette, IdeaList, sidebarNotification, HomePanel, SynthesisInNavigationPanel, LinkListView, AssemblPanel, ctx, Permissions, $, PanelSpecTypes, Jed) {
+define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notification', 'views/navigation/about', 'views/navigation/synthesisInNavigation', 'views/navigation/linkListView', 'views/assemblPanel', 'common/context', 'utils/permissions', 'jquery', 'utils/panelSpecTypes', 'jed', 'common/collectionManager'],
+    function (Assembl, Marionette, IdeaList, sidebarNotification, AboutNavPanel, SynthesisInNavigationPanel, LinkListView, AssemblPanel, Ctx, Permissions, $, PanelSpecTypes, Jed, CollectionManager) {
 
         var NavigationView = AssemblPanel.extend({
             template: "#tmpl-navigation",
@@ -11,13 +11,14 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
             gridSize: AssemblPanel.prototype.NAVIGATION_PANEL_GRID_SIZE,
             minWidth: 350,
             //This MUST match the variables in _variables.scss
-            group_header_height: 3,
+            group_header_height: 0,
             group_editable_header_height: 25,
+            li_height: 40,
             getTitle: function () {
                 return 'Navigation'; // unused
             },
             regions: {
-                home: '.home',
+                about: '.about',
                 debate: '.debate',
                 synthesis: '.synthesis',
                 notification: '.navNotification',
@@ -27,7 +28,8 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
                 navigation: '.js_navigation',
                 ideaFromIdealist: '.js_addIdeaFromIdeaList',
                 level: 'div.second-level',
-                visualization_tab: '#visualization_tab'
+                visualization_tab: '#visualization_tab',
+                synthesis_tab: '#synthesis_tab'
             },
             events: {
                 'click @ui.navigation': 'toggleMenuByEvent',
@@ -35,7 +37,8 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
             },
             initialize: function (options) {
                 Object.getPrototypeOf(Object.getPrototypeOf(this)).initialize.apply(this, arguments);
-                var that = this;
+                var that = this,
+                    collectionManager = new CollectionManager();
 
                 $(window).resize(function () {
                     that.setSideBarHeight();
@@ -44,64 +47,68 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
                 this._accordionContentHeight = null;
                 this._accordionHeightTries = 0;
                 this.visualizationItems = new Backbone.Collection();
-                this.num_items = 3;
+                this.num_items = 2;
 
-                ctx.getDiscussionPromise().done(function(discussion) {
-                    var settings = discussion['settings'];
-                    var jed;
-                    try {
-                        jed = new Jed(settings['translations'][assembl_locale]);
-                    } catch (e) {
-                        // console.error(e);
-                        jed = new Jed({});
-                    }
+                collectionManager.getDiscussionModelPromise()
+                    .then(function(discussion) {
+
+                    var settings = discussion.get('settings'),
+                        jed;
+
                     try {
                         // temporary hack
-                        var visualization_items = settings['navigation_sections'][0]['navigation_content']['items'];
-                        if (visualization_items.length == 0)
+                        if (settings.navigation_sections === undefined)
                             return;
-                        var server_url = document.URL;
-                        var server_url_comp1 = server_url.split('://', 2);
-                        var server_url_comp2 = server_url_comp1[1].split('/', 1);
-                        server_url = server_url_comp1[0]+'://'+server_url_comp2[0];
+                        var visualization_items = settings.navigation_sections[0].navigation_content.items;
+                        if (visualization_items.length === 0)
+                            return;
+                        try {
+                            jed = new Jed(settings['translations'][assembl_locale]);
+                        } catch (e) {
+                            // console.error(e);
+                            jed = new Jed({});
+                        }
                         that.visualizationItems.reset(_.map(visualization_items, function(item) {
                             return new Backbone.Model({
-                                "url": _.template(item.url, {
-                                    "url": encodeURIComponent(server_url+'/data/Discussion/'+ctx.getDiscussionId()+'/jsonld'),
-                                    "lang": assembl_locale
-                                }),
+                                "url": item.url,
                                 "title": jed.gettext(item.title),
                                 "description": jed.gettext(item.description)
                             });
                         }));
-                        that.num_items = 4;
+                        that.num_items += 1;
                         that.ui.visualization_tab.show();
-                        that.setSideBarHeight();
                     } catch (e) {
                         // console.log(e);
                     }
-                });
+                }).delay(500).then(function() {that.setSideBarHeight();});
+                collectionManager.getAllMessageStructureCollectionPromise()
+                    .then(function(allMessageStructureCollection) {
+                        if (allMessageStructureCollection.getLastSynthesisPost()){
+                          that.num_items += 1;
+                          that.ui.synthesis_tab.show();
+                        }
+                      }).delay(500).then(function() {that.setSideBarHeight();});
                 this.listenTo(Assembl.vent, 'navigation:selected', this.toggleMenuByName);
             },
-            onShow: function () {
-                this.setSideBarHeight();
-                //this.notification.show(new sidebarNotification());
+            onShow:function () {
+              this.setSideBarHeight();
             },
-            toggleMenuByName: function (itemName) {
+            toggleMenuByName: function (itemName, options) {
                 var elm = this.$('.nav[data-view=' + itemName + ']');
-                this.toggleMenuByElement(elm);
+                this.toggleMenuByElement(elm, options);
             },
             toggleMenuByEvent: function (evt) {
                 if ($(evt.target).hasClass("panel-header-minimize"))
                     return;
-                var elm = $(evt.currentTarget); // use currentTarget instead of target, so that we are sure that it is a .nav element
-                this.toggleMenuByElement(elm);
+                var elm = $(evt.currentTarget), // use currentTarget instead of target, so that we are sure that it is a .nav element
+                    view = elm.attr('data-view');
+                Assembl.vent.trigger("navigation:selected", view);
             },
             /**
              * Toggle a navigation accordion item
              * @param  {jQuery selection of a DOM element} elm
              */
-            toggleMenuByElement: function (elm) {
+            toggleMenuByElement: function (elm, options) {
                 var view = elm.attr('data-view');
 
                 if (elm.next(this.ui.level).is(':hidden')) {
@@ -110,24 +117,31 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
                     elm.addClass('active');
                     elm.next(this.ui.level).slideDown();
 
-                    this.loadView(view);
+                    this.loadView(view, options);
                 }
             },
             setSideBarHeight: function () {
+                var that = this;
                 this.initVar();
-                this.ui.level.css('height', this._accordionContentHeight);
+
+                //setTimeout(function(){
+                    that.ui.level.height(that._accordionContentHeight);
+                //}, 0);
+                
             },
-            loadView: function (view) {
+
+            /**
+             * @param options: { show_help: boolean }
+             */
+            loadView: function (view, options) {
                 // clear aspects of current state
                 switch (this.getContainingGroup().model.get('navigationState')) {
                     case 'synthesis':
                         var messageListView = this.getContainingGroup().findViewByType(PanelSpecTypes.MESSAGE_LIST);
                         if (messageListView) {
                             messageListView.currentQuery.clearAllFilters();
-                            if (view == 'debate') {
-                                setTimeout(function () {
-                                    messageListView.render();
-                                });
+                            if (view === 'debate') {
+                              messageListView.render();
                             }
                         }
                         break;
@@ -135,12 +149,12 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
                 this.getContainingGroup().model.set('navigationState', view);
                 // set new state
                 switch (view) {
-                    case 'home':
-                        var homePanel = new HomePanel({
+                    case 'about':
+                        var aboutNavPanel = new AboutNavPanel({
                             groupContent: this.getContainingGroup(),
                             panelWrapper: this.getPanelWrapper()
                         });
-                        this.home.show(homePanel);
+                        this.about.show(aboutNavPanel);
                         this.getContainingGroup().resetContextState();
                         break;
                     case 'debate':
@@ -150,7 +164,29 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
                             nav: true
                         });
                         this.debate.show(idealist);
-                        this.getContainingGroup().resetDebateState();
+                        if ( this.getContainingGroup().getCurrentIdea() ) {
+                            this.getContainingGroup().resetDebateState();
+                        }
+                        else {
+                            var that = this;
+                            if ( options && 'show_help' in options ){
+                                if ( options.show_help )
+                                    that.getContainingGroup().resetDebateState(false, true);
+                                else
+                                    that.getContainingGroup().resetDebateState();
+                            }
+                            else {
+                                var collectionManager = new CollectionManager();
+                                collectionManager.getDiscussionModelPromise().then(function (discussion){
+                                    if ( discussion.get("show_help_in_debate_section") ){
+                                        that.getContainingGroup().resetDebateState(false, true);
+                                    }
+                                    else {
+                                        that.getContainingGroup().resetDebateState();
+                                    }
+                                });
+                            }
+                        }
                         break;
                     case 'synthesis':
                         var synthesisInNavigationPanel = new SynthesisInNavigationPanel({
@@ -178,24 +214,21 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
 
                 var _header = $('#header').height(),
                     _window = $(window).height(),
-                    _li = 40 * this.num_items,
-                    _headerGroup = $(".groupHeader").first().height() ? $(".groupHeader").first().height() : ( $(".groupHeader").first().hasClass('editable') ? this.group_editable_header_height : this.group_header_height ),
+                    _li = this.li_height * this.num_items,
+                    _headerGroup = ($(".groupHeader").first().hasClass('editable')) ? this.group_editable_header_height : this.group_header_height,
                     _sideBarHeight = (_window - _header) - _headerGroup,
                     that = this;
 
                 if (this.$el && this.$el.parent() && this.$el.parent().height()) {
-
-                    this._accordionContentHeight = _sideBarHeight - _li;
+                    this._accordionContentHeight = _sideBarHeight - _li - 2;
                 }
                 else { // fallback: set an initial estimation
+                    this._accordionContentHeight = _sideBarHeight - _li - 2;
 
-                    this._accordionContentHeight = _sideBarHeight - _li - 15;
-
-                    if (++this._accordionHeightTries < 10) // prevent infinite loop
-                    {
+                    if (++this._accordionHeightTries < 10){ // prevent infinite loop
                         setTimeout(function () {
                             that.setSideBarHeight();
-                        }, 500);
+                        }, 100);
                     }
                 }
 
@@ -203,9 +236,9 @@ define(['app', 'backbone.marionette', 'views/ideaList', 'views/navigation/notifi
 
             serializeData: function () {
                 return {
-                    Ctx: ctx,
-                    hasMinimize: (ctx.getCurrentInterfaceType() === ctx.InterfaceTypes.EXPERT),
-                    canAdd: ctx.getCurrentUser().can(Permissions.ADD_IDEA)
+                    Ctx: Ctx,
+                    hasMinimize: true, // minimization of the navigation panel is now allowed to everyone. Before, it was: (Ctx.getCurrentInterfaceType() === Ctx.InterfaceTypes.EXPERT),
+                    canAdd: Ctx.getCurrentUser().can(Permissions.ADD_IDEA)
                 }
             },
 

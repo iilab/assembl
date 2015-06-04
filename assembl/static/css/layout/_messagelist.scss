@@ -1,4 +1,4 @@
-#messageList {
+#messageList { // TODO: #messageList is not used anymore. Decide if this should be removed or moved to .messageList
   .messageList-query-info {
     white-space: normal;
     padding-left: 10px;
@@ -41,7 +41,7 @@
 
 .messageList-list {
   display: block;
-  #messageList.is-message-mode & {
+  #messageList.is-message-mode & { // TODO: #messageList is not used anymore. Decide if this should be removed or moved to .messageList
     display: none;
   }
 }
@@ -49,7 +49,7 @@
 #messageList-messages {
   display: none;
 
-  #messageList.is-message-mode & {
+  #messageList.is-message-mode & { // TODO: #messageList is not used anymore. Decide if this should be removed or moved to .messageList
     display: block;
   }
 }
@@ -61,13 +61,13 @@
   .panel-body {
     top: 0px;
     background-color: $gray5;
+    z-index: 1;
   }
 
   .options-filter,
   .view-config {
     @include box-sizing(border-box);
     height: auto;
-    max-height: 60px;
     box-shadow: 0px 1px 1px rgba(0, 0, 0, 0.3);
     background-color: $white;
     .config {
@@ -81,22 +81,115 @@
     }
   }
 
+  .view-config {
+    @include flexbox((
+      display: box,
+      box-orient: vertical
+    ), $version: 1);
+    @include flexbox((
+      display: flexbox,
+      flex-direction: row
+    ), $version: 2);
+    @include flexbox((
+      display: flex,
+      flex-direction: row
+    ));
+    justify-content: space-between;
+    -ms-flex-pack: space-between; // IE 10 way of saying "justify-content: space-between;"
+    .config {
+      @include flexbox((flex: 1));
+    }
+  }
+
+  .show-expert-mode {
+    @include flexbox((
+      display: box,
+      box-orient: vertical
+    ), $version: 1);
+    @include flexbox((
+      display: flexbox,
+      flex-direction: row
+    ), $version: 2);
+    @include flexbox((
+      display: flex,
+      flex-direction: row
+    ));
+
+    .show-expert-mode-label {
+      line-height: 24px; // the height of the toggle button
+      min-width: 85px; // the approximate width of label's text
+      padding-left: 15px;
+      padding-right: 2px;
+      text-align: right;
+      vertical-align: middle;
+      color: $txtGray1;
+    }
+
+    .show-expert-mode-toggle-button {
+      margin-top: 3px;
+    }
+  }
+
   .options-filter {
+    max-height: 60px;
+    @include flexbox((
+      display: box,
+      box-orient: vertical
+    ), $version: 1);
+    @include flexbox((
+      display: flexbox,
+      flex-direction: row
+    ), $version: 2);
+    @include flexbox((
+      display: flex,
+      flex-direction: row
+    ));
+
+    .options-filter-items {
+      @include flexbox((
+        display: box,
+        box-orient: vertical,
+        flex: 1
+      ), $version: 1);
+      @include flexbox((
+        display: flexbox,
+        flex-direction: row,
+        flex: 1
+      ), $version: 2);
+      @include flexbox((
+        display: flex,
+        flex-direction: row,
+        flex: 1
+      ));
+    }
+
     .option {
       @include box-sizing(border-box);
-      width: 50%;
-      height: 36px;
+      //width: 50%;
+      min-height: 36px;
+      @include flex-grow(1);
       cursor: pointer;
-      color: $gray4;
+      //color: $gray4;
+      color: $txtGray1;
       background-color: $white;
+      @include transition(border-bottom 0.2s ease-in);
+      border-bottom: 3px solid transparent;
+      &:hover {
+        //border-bottom: 3px solid lighten($black, 70%);
+        border-bottom: 3px solid $txtGray1;
+      }
     }
     .option:first-child {
-      border-right: 1px solid $gray;
+      //border-right: 1px solid $gray;
     }
     .option.selected {
       color: $green;
       font-weight: 600;
       border-bottom: 3px solid $green;
+    }
+
+    .show-expert-mode {
+      padding-top: 5px;
     }
   }
 
@@ -104,18 +197,44 @@
     height: 40px;
     box-shadow: 0px -3px 1px rgba(0, 0, 0, 0.1);
     @include box-sizing(border-box);
-    background-color: $white;
+    background-color: rgba($white, 0.65);
     position: absolute;
     bottom: 0px;
     width: 100%;
     left: 0;
-    line-height: 35px;
+    line-height: 37px;
+    z-index: 2;
 
     .icon-comment {
       font-size: 22px;
       vertical-align: sub;
+      line-height: 0;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    .icon-comment::before {
+      margin-left: -2px !important;
     }
 
+  }
+
+  .real-time-updates{
+    position: absolute;
+    margin-left: auto;
+    margin-right: auto;
+    left: 0;
+    right: 0;
+    z-index: 2;
+
+    .btn-real-time{
+      box-shadow: 0 3px 8px rgba(0,0,0,0.5);
+      height: 24px;
+      cursor: pointer;
+      @include border-radius(0 0 2px 2px);
+      font-weight: bold;
+      font-size: 12px;
+      border: none;
+    }
   }
 
 }

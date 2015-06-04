@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import (
     Column, Integer, ForeignKey, Boolean, String, Float, DateTime, and_)
 from sqlalchemy.orm import relationship, backref
+from pyramid.settings import asbool
 
 from . import (Base, DiscussionBoundBase, Tombstonable)
 from .discussion import Discussion
@@ -105,6 +106,13 @@ class AbstractIdeaVote(DiscussionBoundBase, Tombstonable):
     def value(self):
         pass
 
+    def unique_query(self):
+        idea_id = self.idea_id or (self.idea.id if self.idea else None)
+        widget_id = self.widget_id or (self.widget.id if self.widget else None)
+        voter_id = self.voter_id or (self.voter.id if self.voter else None)
+        return (self.db.query(self.__class__).filter_by(
+                    idea_id=idea_id, widget_id=widget_id, voter_id=voter_id), True)
+
     crud_permissions = CrudPermissions(
         P_VOTE, P_ADMIN_DISC, P_SYSADMIN, P_SYSADMIN, P_VOTE, P_VOTE, P_READ)
 
@@ -124,10 +132,10 @@ class LickertRange(Base):
 
     @classmethod
     def get_range(cls, max=10, min=1):
-        range = cls.db.query(cls).filter_by(minimum=min, maximum=max).first()
+        range = cls.default_db.query(cls).filter_by(minimum=min, maximum=max).first()
         if not range:
             range = cls(minimum=min, maximum=max)
-            cls.db.add(range)
+            cls.default_db.add(range)
         return range
 
 
@@ -209,9 +217,8 @@ class BinaryIdeaVote(AbstractIdeaVote):
         return self.value
 
     @safe_value.setter
-    def set_value_safe(self, val):
-        assert val <= self.lickert_range.maximum and \
-            val >= self.lickert_range.minimum
+    def safe_value(self, val):
+        assert self.lickert_range.minimum <= val <= self.lickert_range.maximum
         self.value = val
 
     @property
@@ -219,5 +226,5 @@ class BinaryIdeaVote(AbstractIdeaVote):
         return self.vote_value
 
     @value.setter
-    def value_safe(self, val):
-        self.vote_value = bool(val)
+    def value(self, val):
+        self.vote_value = asbool(val)

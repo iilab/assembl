@@ -1,15 +1,14 @@
 'use strict';
 
-define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'objects/storage', 'views/navBar', 'views/groups/groupContainer', 'common/collectionManager', 'objects/viewsFactory', 'views/admin/adminDiscussion', 'views/admin/adminNotificationSubscriptions', 'views/admin/adminPartners', 'views/user/userNotificationSubscriptions', 'views/user/profile', 'views/authorization', 'utils/permissions', 'views/user/account', 'views/admin/adminDiscussionSettings'],
-    function (Marionette, Assembl, Ctx, Agents, storage, navBar, GroupContainer, CollectionManager, viewsFactory, adminDiscussion, adminNotificationSubscriptions, adminPartners, userNotificationSubscriptions, userProfile, Authorization, Permissions, userAccount, adminSettings) {
+define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'objects/storage', 'views/navBar', 'views/groups/groupContainer', 'common/collectionManager', 'objects/viewsFactory', 'views/admin/adminDiscussion', 'views/admin/adminNotificationSubscriptions', 'views/admin/adminPartners', 'views/user/userNotificationSubscriptions', 'views/user/profile', 'views/authorization', 'utils/permissions', 'views/user/account', 'views/admin/adminDiscussionSettings', 'utils/i18n'],
+    function (Marionette, Assembl, Ctx, Agents, storage, navBar, GroupContainer, CollectionManager, viewsFactory, adminDiscussion, adminNotificationSubscriptions, adminPartners, userNotificationSubscriptions, userProfile, Authorization, Permissions, userAccount, adminSettings, i18n) {
 
-        var routeManager = Marionette.Controller.extend({
+        var routeManager = Marionette.Object.extend({
 
             initialize: function () {
                 window.assembl = {};
 
                 this.collectionManager = new CollectionManager();
-                this.user = null;
 
                 /**
                  * fulfill app.currentUser
@@ -28,7 +27,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             edition: function () {
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var edition = new adminDiscussion();
                     Assembl.groupContainer.show(edition);
                 }
@@ -36,7 +35,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             partners: function () {
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var partners = new adminPartners();
                     Assembl.groupContainer.show(partners);
                 }
@@ -44,7 +43,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             notifications: function () {
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var notifications = new adminNotificationSubscriptions();
                     Assembl.groupContainer.show(notifications);
                 }
@@ -52,7 +51,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             settings: function(){
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var adminSetting = new adminSettings();
                     Assembl.groupContainer.show(adminSetting);
                 }
@@ -60,7 +59,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             userNotifications: function () {
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var user = new userNotificationSubscriptions();
                     Assembl.groupContainer.show(user);
                 }
@@ -68,7 +67,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             profile: function () {
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var profile = new userProfile();
                     Assembl.groupContainer.show(profile);
                 }
@@ -76,7 +75,7 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
 
             account: function(){
                 Assembl.headerRegions.show(new navBar());
-                if (this.isAuthenticated()) {
+                if (this.userHaveAccess()) {
                     var account = new userAccount();
                     Assembl.groupContainer.show(account);
                 }
@@ -86,15 +85,21 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
                 //TODO: add new behavior to show messageList Panel
                 this.restoreViews();
 
-                setTimeout(function () {
+                // test if this issue fixed
+                Assembl.vent.trigger("navigation:selected", 'debate', { show_help: false });
+                Assembl.vent.trigger('messageList:showMessageById', id);
+
+                /*setTimeout(function () {
                     //TODO: fix this horrible hack
                     //We really need to address panels explicitely
                     Assembl.vent.trigger("navigation:selected", 'debate');
                     Assembl.vent.trigger('messageList:showMessageById', id);
-                }, 0);
+                }, 0);*/
                 //TODO: fix this horrible hack that prevents calling
                 //showMessageById over and over.
-                window.history.pushState('object or string', 'Title', '../');
+                //window.history.pushState('object or string', 'Title', '../');
+                console.log("DEFAULT ");
+                Backbone.history.navigate('/', {replace: true});
             },
 
             idea: function (id) {
@@ -105,23 +110,25 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
                     //TODO: fix this horrible hack
                     //We really need to address panels explicitely
                     Assembl.vent.trigger("navigation:selected", 'debate');
-                    Assembl.vent.trigger('ideaList:selectIdea', id);
+                    Assembl.vent.trigger('ideaList:selectIdea', id, "from_url", true);
                 }, 0);
                 //TODO: fix this horrible hack that prevents calling
                 //showMessageById over and over.
-                window.history.pushState('object or string', 'Title', '../');
+                //window.history.pushState('object or string', 'Title', '../');
+                Backbone.history.navigate('/', {replace: true});
             },
 
             loadCurrentUser: function () {
+                var user = null;
                 if (Ctx.getCurrentUserId()) {
-                    this.user = new Agents.Model();
-                    this.user.fetchFromScriptTag('current-user-json');
+                    user = new Agents.Model();
+                    user.fetchFromScriptTag('current-user-json');
                 }
                 else {
-                    this.user = new Agents.Collection().getUnknownUser();
+                    user = new Agents.Collection().getUnknownUser();
                 }
-                this.user.fetchPermissionsFromScripTag();
-                Ctx.setCurrentUser(this.user);
+                user.fetchPermissionsFromScriptTag();
+                Ctx.setCurrentUser(user);
                 Ctx.loadCsrfToken(true);
             },
 
@@ -159,25 +166,45 @@ define(['backbone.marionette', 'app', 'common/context', 'models/agents', 'object
                 });
             },
 
-            isAuthenticated: function () {
+            userHaveAccess: function () {
                 /**
                  * TODO: backend api know private discussion and can redirect to login
                  * add this method to home page route
                  * */
-                if (Ctx.getCurrentUserId()) {
-                    if (Ctx.getCurrentUser().can(Permissions.READ)) {
-                        return true;
-                    } else {
-                        var authorization = new Authorization();
-                        Assembl.groupContainer.show(authorization);
-                        return false;
-                    }
-                } else {
-                    var authorization = new Authorization();
+                var route = Backbone.history.fragment,
+                    access = false;
+
+                if (!Ctx.getCurrentUserId()) {
+                    var authorization = new Authorization({
+                        error: 401,
+                        message: i18n.gettext('You must be logged in to access this page.')
+                    });
                     Assembl.groupContainer.show(authorization);
-                    return false;
+                    return;
                 }
 
+                switch(route){
+                    case 'edition':
+                    case 'settings':
+                    case 'notifications':
+                    case 'partners':
+                        access = (!Ctx.getCurrentUser().can(Permissions.ADMIN_DISCUSSION)) ? false : true;
+                        break;
+
+                    default:
+                        access = (!Ctx.getCurrentUser().can(Permissions.READ)) ? false : true;
+                        break;
+                }
+
+                if(!access){
+                    var authorization = new Authorization({
+                        error: 401,
+                        message: i18n.gettext('Your level of permissions do not allow you to see the rest of this content')
+                    });
+                    Assembl.groupContainer.show(authorization);
+                }
+
+                return access;
             }
 
         });

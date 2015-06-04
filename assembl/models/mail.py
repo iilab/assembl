@@ -117,7 +117,7 @@ class AbstractMailbox(PostSource):
                   'hr',
                   ]
     VALID_ATTRIBUTES = ['href',#For hyperlinks
-                        
+
                         'alt',#For accessiblity
                         'colspan', 'headers', 'abbr', 'scope', 'sorted'#For tables
                   ]
@@ -126,7 +126,7 @@ class AbstractMailbox(PostSource):
         """ Maybe we should have used Bleach (https://github.com/jsocol/bleach)
         """
         soup = BeautifulSoup(html_value)
-        
+
         for tag in soup.find_all(True):
             if tag.name not in valid_tags:
                 tag.hidden = True
@@ -139,7 +139,7 @@ class AbstractMailbox(PostSource):
 
     @staticmethod
     def strip_full_message_quoting_plaintext(message_body):
-        """Assumes any encoding conversions have already been done 
+        """Assumes any encoding conversions have already been done
         """
         #Most useful to develop this:
         #http://www.motobit.com/util/quoted-printable-decoder.asp
@@ -184,7 +184,7 @@ class AbstractMailbox(PostSource):
                     },
             }
         def check_quote_announcement_lines_match(currentQuoteAnnounce, keysStillMatching, lineToMatch):
-            
+
             if len(keysStillMatching) == 0:
                 #Restart from scratch
                 keysStillMatching = quote_announcement_lines_regexes.keys()
@@ -201,8 +201,8 @@ class AbstractMailbox(PostSource):
             if len(keysStillMatching)>0:
                 currentQuoteAnnounce.append(lineToMatch)
             return matchComplete, keysStillMatching
-        
-        
+
+
         defaultQuotePrefixRegex=re.compile(r"^>\s|^>$")
         quote_prefix_regex=defaultQuotePrefixRegex
         whitespace_line_regex=re.compile(r"^\s*$")
@@ -217,7 +217,7 @@ class AbstractMailbox(PostSource):
             PotentialQuoteAnnounce='PotentialQuoteAnnounce'
             QuoteAnnounceLastLine='QuoteAnnounceLastLine'
             AllWhiteSpace='AllWhiteSpace'
-            
+
         line_state_before_transition = LineState.Normal
         previous_line_state = LineState.Normal
         line_state = LineState.Normal
@@ -225,7 +225,7 @@ class AbstractMailbox(PostSource):
             if line_state != previous_line_state:
                 line_state_before_transition = previous_line_state
             previous_line_state = line_state
-            
+
             (matchComplete, keysStillMatching) = check_quote_announcement_lines_match(currentQuoteAnnounce, keysStillMatching, line)
             if matchComplete:
                 line_state = LineState.QuoteAnnounceLastLine
@@ -265,13 +265,13 @@ class AbstractMailbox(PostSource):
 
     @staticmethod
     def strip_full_message_quoting_html(message_body):
-        """Assumes any encoding conversions have already been done 
+        """Assumes any encoding conversions have already been done
         """
         #Most useful to develop this:
         #http://www.motobit.com/util/quoted-printable-decoder.asp
         #http://www.freeformatter.com/html-formatter.html
         #http://www.freeformatter.com/xpath-tester.html#ad-output
-        
+
         debug = True;
         from lxml import html, etree
         doc = html.fromstring(message_body)
@@ -281,7 +281,7 @@ class AbstractMailbox(PostSource):
             if not matches[0].text or "---------- Forwarded message ----------" not in matches[0].text:
                 matches[0].drop_tree()
                 return html.tostring(doc)
-            
+
         #Strip modern Apple Mail quotes
         find = etree.XPath(r"//child::blockquote[contains(@type,'cite')]/preceding-sibling::br[contains(@class,'Apple-interchange-newline')]/parent::node()/parent::node()")
         matches = find(doc)
@@ -291,7 +291,7 @@ class AbstractMailbox(PostSource):
         if len(matches) == 1:
             matches[0].drop_tree()
             return html.tostring(doc)
-            
+
 
         #Strip old AppleMail quotes (french)
         regexpNS = "http://exslt.org/regular-expressions"
@@ -302,14 +302,14 @@ class AbstractMailbox(PostSource):
         if len(matches) == 1:
             matches[0].drop_tree()
             return html.tostring(doc)
-        
+
         #Strip Outlook quotes (when outlook gives usable structure)
         find = etree.XPath(r"//body/child::blockquote/child::div[contains(@class,'OutlookMessageHeader')]/parent::node()")
         matches = find(doc)
         if len(matches) == 1:
             matches[0].drop_tree()
             return html.tostring(doc)
-        
+
         #Strip Outlook quotes (when outlook gives NO usable structure)
         successiveStringsToMatch = [
                                         '|'.join(['^From:.*$','^De :.*$']),
@@ -336,7 +336,7 @@ class AbstractMailbox(PostSource):
             matches[0].tail = None
             matches[0].drop_tree()
             return html.tostring(doc)
-        
+
         #Strip Thunderbird quotes
         mainXpathFragment = "//child::blockquote[contains(@type,'cite') and boolean(@cite)]"
         find = etree.XPath(mainXpathFragment+"/self::blockquote")
@@ -347,7 +347,7 @@ class AbstractMailbox(PostSource):
                 matchQuoteAnnounce[-1].tail = None
                 matches[0].drop_tree()
                 return html.tostring(doc)
-            
+
         #Nothing was stripped...
         return html.tostring(doc)
 
@@ -356,7 +356,7 @@ class AbstractMailbox(PostSource):
         parsed_email = email.message_from_string(message_string)
         body = None
         error_description = None
-        
+
         def get_payload(message):
             """ Returns the first text/html body, and falls back to text/plain body """
 
@@ -410,10 +410,10 @@ class AbstractMailbox(PostSource):
         else:
             error_description = "Unable to parse the Message-ID for message string: \n%s" % message_string
             return (None, None, error_description)
-        
+
         assert new_message_id;
         assert new_message_id != ''
-        
+
         new_in_reply_to = parsed_email.get('In-Reply-To', None)
         if new_in_reply_to:
             new_in_reply_to = email_header_to_unicode(
@@ -443,10 +443,12 @@ class AbstractMailbox(PostSource):
             email_object.subject = subject
             email_object.creation_date = creation_date
             email_object.source_post_id = new_message_id
+            email_object.message_id = self.get_default_prepended_id() + \
+                new_message_id
             email_object.in_reply_to = new_in_reply_to
             email_object.body = body
             email_object.body_mime_type = mimeType
-            email_object.full_message = message_string
+            email_object.imported_blob = message_string
         except NoResultFound:
             email_object = Email(
                 discussion=self.discussion,
@@ -458,11 +460,11 @@ class AbstractMailbox(PostSource):
                 in_reply_to=new_in_reply_to,
                 body=body,
                 body_mime_type = mimeType,
-                full_message=message_string
+                imported_blob=message_string
             )
         except MultipleResultsFound:
             """ TO find duplicates (this should no longer happen, but in case it ever does...
-            
+
 SELECT * FROM post WHERE id in (SELECT MAX(post.id) as max_post_id FROM imported_post JOIN post ON (post.id=imported_post.id) GROUP BY message_id, source_id HAVING COUNT(post.id)>1)
 
 To kill them:
@@ -476,9 +478,9 @@ FROM post AS post_to_correct
 JOIN post AS bad_post_parent ON (post_to_correct.parent_id = bad_post_parent.id)
 JOIN post AS new_post_parent ON (new_post_parent.message_id = bad_post_parent.message_id AND new_post_parent.id <> bad_post_parent.id)
 WHERE post_to_correct.parent_id IN (
-  SELECT MAX(post.id) as max_post_id 
-  FROM imported_post 
-  JOIN post ON (post.id=imported_post.id) 
+  SELECT MAX(post.id) as max_post_id
+  FROM imported_post
+  JOIN post ON (post.id=imported_post.id)
   GROUP BY message_id, source_id
   HAVING COUNT(post.id)>1
   )
@@ -493,9 +495,9 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
             raise MultipleResultsFound("ID %s has duplicates in source %d"%(new_message_id,self.id))
         email_object.creator = sender_email_account.profile
         email_object.source = self
-        email_object = self.db.merge(email_object)
+        # email_object = self.db.merge(email_object)
         return (email_object, parsed_email, error_description)
-        
+
     """
     emails have to be a complete set
     """
@@ -504,7 +506,7 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
         #print('Threading...')
         emails_for_threading = []
         for mail in emails:
-            email_for_threading = jwzthreading.make_message(email.message_from_string(mail.full_message))
+            email_for_threading = jwzthreading.make_message(email.message_from_string(mail.imported_blob))
             #Store our emailsubject, jwzthreading does not decode subject itself
             email_for_threading.subject = mail.subject
             #Store our email object pointer instead of the raw message text
@@ -518,7 +520,7 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
         L.sort()
         for subj, container in L:
             jwzthreading.print_container(container, 0, True)
-            
+
         def update_threading(threaded_emails, parent=None, debug=False):
             if debug:
                 print "\n\nEntering update_threading() for %s mails:" % len(threaded_emails)
@@ -530,7 +532,7 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
                     print "parent: " + repr(container.parent)
                     print "children: " + repr(container.children)
 
-                
+
 
                 if(container.message):
                     current_parent = container.message.message.parent
@@ -570,10 +572,10 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
                                 considers mails"
                     update_threading(container.children, container, debug=debug)
                 else:
-                    if debug: 
+                    if debug:
                         print "Current message ID: None, was a dummy container"
                     update_threading(container.children, parent, debug=debug)
-                
+
         update_threading(threaded_emails.values(), debug=False)
 
     def reprocess_content(self):
@@ -581,14 +583,15 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
             but without re-hitting the source, or changing the object ids.
             Call when a code change would change the representation in the database
             """
-        emails = self.db.query(Email).filter(
+        session = self.db
+        emails = session.query(Email).filter(
                 Email.source_id == self.id,
                 ).options(joinedload_all(Email.parent))
-        session = self.db
         for email in emails:
-            #session = Email.db
+            #session = self.db
             #session.add(email)
-            (email_object, dummy, error) = self.parse_email(email.full_message, email)
+            (email_object, dummy, error) = self.parse_email(
+                email.imported_blob, email)
             #session.add(email_object)
             session.commit()
             #session.remove()
@@ -597,9 +600,14 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
             self.thread_mails(emails)
 
     def import_content(self, only_new=True):
-        #Mailbox.do_import_content(self, only_new)
+        from assembl.lib.config import get_config
+        from pyramid.settings import asbool
         assert self.id
-        import_mails.delay(self.id, only_new)
+        config = get_config()
+        if asbool(config.get('use_source_reader_for_mail', False)):
+            super(AbstractMailbox, self).import_content(only_new)
+        else:
+            import_mails.delay(self.id, only_new)
 
     _address_match_re = re.compile(
         r'[\w\-][\w\-\.]+@[\w\-][\w\-\.]+[a-zA-Z]{1,4}'
@@ -634,7 +642,7 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
         #TODO benoitg
         print "TODO: Mail::send_post():  Actually queue message"
         #self.DECRECATEDsend_mail(sender=post.creator, message_body=post.body, subject=post.subject)
-        
+
     def DECRECATEDsend_mail(
         self,
         sender,
@@ -701,26 +709,26 @@ FROM post WHERE post.id IN (SELECT MAX(post.id) as max_post_id FROM imported_pos
         smtp_connection.quit()
 
     def message_ok_to_import(self, message_string):
-        """Check if message should be imported at all (not a bounce, vacation, 
+        """Check if message should be imported at all (not a bounce, vacation,
         etc.)
-        
-        The reference is La référence est http://tools.ietf.org/html/rfc3834 
+
+        The reference is La référence est http://tools.ietf.org/html/rfc3834
         """
         #TODO:  This is a double-parse, refactor parse_message so we can reuse it
         parsed_email = email.message_from_string(message_string)
         if parsed_email.get('Return-Path', None) == '<>':
-            #TODO:  Check if a report-type=delivery-status; is present, 
+            #TODO:  Check if a report-type=delivery-status; is present,
             # and process the bounce
             return False
         if parsed_email.get('Precedence', None) == 'bulk':
             return False
         if parsed_email.get('Precedence', None) == 'list':
-            # A mailing list
-            return False
+            # A mailing list message: Allow for mailing lists only
+            return isinstance(self, MailingList)
         if parsed_email.get('Auto-Submitted', None) == 'auto-generated':
-            return False        
+            return False
         return True
-        
+
     def __repr__(self):
         return "<%s %s: %s>" % (type(self).__name__ , repr(self.id),repr(self.name))
 
@@ -741,7 +749,7 @@ class IMAPMailbox(AbstractMailbox):
     #Note:  If using STARTTLS, this should be set to false
     use_ssl = Column(Boolean, default=True)
     password = Column(UnicodeText, nullable=False)
-    
+
     __mapper_args__ = {
         'polymorphic_identity': 'source_imapmailbox',
         'with_polymorphic': '*'
@@ -749,7 +757,8 @@ class IMAPMailbox(AbstractMailbox):
     @staticmethod
     def do_import_content(mbox, only_new=True):
         mbox = mbox.db.merge(mbox)
-        mbox.db.add(mbox)
+        session = mbox.db
+        session.add(mbox)
         if mbox.use_ssl:
             mailbox = IMAP4_SSL(host=mbox.host.encode('utf-8'), port=mbox.port)
         else:
@@ -786,7 +795,7 @@ class IMAPMailbox(AbstractMailbox):
             # a) we don't import only new messages or
             # b) the message with mbox.last_imported_email_uid hasn't been found
             #    (may have been deleted)
-            # In this case we request all messages and rely on duplicate 
+            # In this case we request all messages and rely on duplicate
             # detection
             command = "ALL"
             search_status, search_result = mailbox.uid('search', None, command)
@@ -795,11 +804,11 @@ class IMAPMailbox(AbstractMailbox):
             email_ids = search_result[0].split()
 
         def import_email(mailbox_obj, email_id):
-            session = mailbox_obj.db()
+            session = mailbox_obj.db
             #print "running fetch for message: "+email_id
             status, message_data = mailbox.uid('fetch', email_id, "(RFC822)")
             assert status == 'OK'
-                
+
             #print repr(message_data)
             for response_part in message_data:
                 if isinstance(response_part, tuple):
@@ -832,33 +841,22 @@ class IMAPMailbox(AbstractMailbox):
         with transaction.manager:
             if len(email_ids):
                 #We imported mails, we need to re-thread
-                emails = Email.db().query(Email).filter(
+                emails = session.query(Email).filter(
                     Email.discussion_id == discussion_id,
                     ).options(joinedload_all(Email.parent))
 
                 AbstractMailbox.thread_mails(emails)
                 mark_changed()
 
+    def make_reader(self):
+        from assembl.tasks.imaplib2_source_reader import IMAPReader
+        return IMAPReader(self.id)
+
     def get_send_address(self):
         """
         Get the email address to send a message to the discussion
         """
         return self.most_common_recipient_address()
-
-    def serializable(self):
-        serializable_source = super(AbstractMailbox, self).serializable()
-
-        serializable_source.update({
-            "host": self.host,
-            "port": self.port,
-            "username": self.username,
-            "use_ssl": self.use_ssl,
-            "folder": self.folder,
-            "most_common_recipient_address":
-            self.most_common_recipient_address()
-        })
-
-        return serializable_source
 
 class MailingList(IMAPMailbox):
     """
@@ -898,7 +896,7 @@ class AbstractFilesystemMailbox(AbstractMailbox):
     ), primary_key=True)
 
     filesystem_path = Column(CoerceUnicode(), nullable=False)
-    
+
     __mapper_args__ = {
         'polymorphic_identity': 'source_filesystemmailbox',
     }
@@ -913,16 +911,17 @@ class MaildirMailbox(AbstractFilesystemMailbox):
         ondelete='CASCADE',
         onupdate='CASCADE'
     ), primary_key=True)
-    
+
     __mapper_args__ = {
         'polymorphic_identity': 'source_maildirmailbox',
     }
     @staticmethod
     def do_import_content(abstract_mbox, only_new=True):
         abstract_mbox = abstract_mbox.db.merge(abstract_mbox)
-        abstract_mbox.db.add(abstract_mbox)
+        session = abstract_mbox.db
+        session.add(abstract_mbox)
         discussion_id = abstract_mbox.discussion_id
-        
+
         if not os.path.isdir(abstract_mbox.filesystem_path):
             raise "There is no directory at %s" % abstract_mbox.filesystem_path
         else:
@@ -932,7 +931,7 @@ class MaildirMailbox(AbstractFilesystemMailbox):
             new_folder_present = os.path.isdir(new_folder_path)
             tmp_folder_path = os.path.join(abstract_mbox.filesystem_path, 'tmp')
             tmp_folder_present = os.path.isdir(tmp_folder_path)
-            
+
             if not (cur_folder_present | new_folder_present | tmp_folder_present):
                 raise "Directory at %s is NOT a maildir" % abstract_mbox.filesystem_path
             else:
@@ -949,7 +948,7 @@ class MaildirMailbox(AbstractFilesystemMailbox):
         mails = mbox.values()
         #import pdb; pdb.set_trace()
         def import_email(abstract_mbox, message_data):
-            session = abstract_mbox.db()
+            session = abstract_mbox.db
             message_string = message_data.as_string()
 
             (email_object, dummy, error) = abstract_mbox.parse_email(message_string)
@@ -958,12 +957,12 @@ class MaildirMailbox(AbstractFilesystemMailbox):
             session.add(email_object)
             transaction.commit()
             abstract_mbox = AbstractMailbox.get(abstract_mbox.id)
-       
+
         if len(mails):
             [import_email(abstract_mbox, message_data) for message_data in mails]
-            
+
             #We imported mails, we need to re-thread
-            emails = Email.db().query(Email).filter(
+            emails = session.query(Email).filter(
                     Email.discussion_id == discussion_id,
                     ).options(joinedload_all(Email.parent))
 
@@ -983,19 +982,14 @@ class Email(ImportedPost):
     ), primary_key=True)
 
     # in virtuoso, varchar is 1024 bytes and sizeof(wchar)==4, so varchar is 256 chars
-    recipients = deferred(Column(UnicodeText, nullable=False), group='raw_details')
+    recipients = Column(UnicodeText, nullable=False)
     sender = Column(CoerceUnicode(), nullable=False)
-
-    full_message = deferred(Column(Binary), group='raw_details')
 
     in_reply_to = Column(CoerceUnicode())
 
     __mapper_args__ = {
         'polymorphic_identity': 'email',
     }
-
-    def __init__(self, *args, **kwargs):
-        super(Email, self).__init__(*args, **kwargs)
 
     def REWRITEMEreply(self, sender, response_body):
         """

@@ -1,7 +1,7 @@
 'use strict';
 
-define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', '../utils/i18n', 'zeroclipboard', 'backbone.modal', 'backbone.marionette.modals', 'bootstrap', 'jquery-linkify', 'jquery-oembed-all'],
-    function (Assembl, $, Permissions, Roles, Moment, i18n, Zeroclipboard, backboneModal, marionetteModal, bootstrap, linkify, oembed) {
+define(['../app', 'jquery', 'underscore', '../utils/permissions', '../utils/roles', 'moment', '../utils/i18n', 'backbone.modal', 'backbone.marionette.modals', 'bootstrap', 'jquery-linkify', 'jquery-oembed-all', 'debug', 'bluebird'],
+    function (Assembl, $, _, Permissions, Roles, Moment, i18n, backboneModal, marionetteModal, bootstrap, linkify, oembed, debug, Promise) {
 
         var Context = function () {
 
@@ -14,6 +14,13 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              * @type {boolean}
              */
             this.debugRender = false;
+            
+            /**
+             * Send debugging output to console.log to observe annotator related
+             * events
+             * @type {boolean}
+             */
+            this.debugAnnotator = false;
 
             /**
              * Send debugging output to console.log to observe socket input
@@ -61,7 +68,7 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              * Current dragged segment
              * @type {Segment}
              */
-            this.draggedSegment = null;
+            this._draggedSegment = null;
 
             /**
              * Current dragged idea
@@ -127,6 +134,11 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              */
             this.cachedWidgetDataAssociatedToIdeasPromises = {};
 
+            /*
+             * Timeout (created by setTimeout()) which hides the popover
+             */
+            this.timeoutIdHidePopover = null;
+
             this.init();
         }
 
@@ -136,28 +148,8 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 return this.DISCUSSION_SLUG;
             },
 
-            getDiscussionPromise: function () {
-
-                var deferred = $.Deferred();
-                var that = this;
-                //var url =  this.getApiUrl();
-                //var url = this.getApiV2Url() + '/Discussion/' + this.getDiscussionId();
-                var url = this.getApiV2DiscussionUrl();
-
-                if (this.discussionPromise === undefined) {
-                    this.discussion = undefined;
-                    this.discussionPromise = $.get(url, function (data) {
-                        that.discussion = data;
-                        deferred.resolve(that.discussion);
-                    });
-                }
-                else {
-                    this.discussionPromise.done(function () {
-                        deferred.resolve(that.discussion);
-                    });
-                }
-
-                return deferred.promise();
+            getLoginURL: function() {
+              return '/' + Ctx.getDiscussionSlug() + '/login';
             },
 
             getSocketUrl: function () {
@@ -170,6 +162,10 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
 
             getCurrentUserId: function () {
                 return this.CURRENT_USER_ID;
+            },
+
+            setCurrentUserId: function(user_id) {
+                this.CURRENT_USER_ID = user_id;
             },
 
             getCurrentUser: function () {
@@ -186,15 +182,6 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
 
             setCsrfToken: function (token) {
                 this.csrfToken = token;
-            },
-
-            getDraggedAnnotation: function () {
-                return this._draggedAnnotation;
-            },
-
-            setDraggedAnnotation: function (annotation, annotatorEditor) {
-                this._draggedAnnotation = annotation;
-                this._annotatorEditor = annotatorEditor;
             },
 
             /**
@@ -400,6 +387,96 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 return this.openedPanels === 1;
             },
 
+            // "this" has to be the popover div: $("#popover-oembed")
+            popoverAfterEmbed: function() {
+                var screenWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+                var screenHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+                var popoverWidth = $(this).outerWidth();
+                var popoverHeight = $(this).outerHeight();
+                var positionLeft = parseInt($(this).css('left'));
+                var positionTop = parseInt($(this).css('top'));
+                var newPositionLeft = positionLeft - popoverWidth/2;
+                if ( newPositionLeft + popoverWidth > screenWidth )
+                    newPositionLeft = screenWidth - popoverWidth;
+                if ( newPositionLeft < 0 )
+                    newPositionLeft = 0;
+                var newPositionTop = positionTop;
+                if ( newPositionTop + popoverHeight > screenHeight )
+                    newPositionTop = screenHeight - popoverHeight;
+                if ( newPositionTop < 0 )
+                    newPositionTop = 0;
+                $(this).css('left', newPositionLeft + 'px' );
+                $(this).css('top', newPositionTop + 'px' );
+            },
+
+            openTargetInPopOver: function(evt) {
+                var that = this;
+
+                var target_url = null;
+                if (evt && evt.currentTarget) {
+                    if ($(evt.currentTarget).attr("data-href"))
+                        target_url = $(evt.currentTarget).attr("data-href");
+                    else if ($(evt.currentTarget).attr("href") && $(evt.currentTarget).attr("href") != "#")
+                        target_url = $(evt.currentTarget).attr("href");
+                }
+                if (!target_url){
+                    console.log("context::openTargetInPopOver: no href attribute given");
+                    return false;
+                }
+
+                var popover_width = 500;
+                var popover_height = 500;
+                var popover_scrolling = "no";
+                if (evt && evt.currentTarget) {
+                    if ($(evt.currentTarget).attr("data-popover-width"))
+                        popover_width = $(evt.currentTarget).attr("data-popover-width");
+                    if ($(evt.currentTarget).attr("data-popover-height"))
+                        popover_height = $(evt.currentTarget).attr("data-popover-height");
+                    if ($(evt.currentTarget).attr("data-popover-scrolling"))
+                        popover_scrolling = $(evt.currentTarget).attr("data-popover-scrolling");
+                }
+
+                var popover = $("#popover-oembed");
+
+                var iframe = '<iframe width="' + popover_width + '" height="' + popover_height + '" frameborder="0" scrolling="' + popover_scrolling + '" frametransparency="1" src="' + target_url + '"></iframe>';
+                popover[0].innerHTML = iframe;
+                
+                var triggerHover = function(evt){
+                    console.log("triggerHover(evt: ", evt);
+                    popover.css('position','fixed');
+                    popover.css('top', (evt.pageY-parseInt(popover_height)-14) + 'px');
+                    popover.css('left', evt.pageX + 'px');
+                    //popover.css('padding', '25px 50px');
+                    popover.show();
+
+                    that.popoverAfterEmbed.apply(popover[0]);
+
+                    window.clearTimeout(that.timeoutIdHidePopover);
+
+                    var hidePopover = function(){
+                        popover.hide();
+                    };
+                    
+                    popover.unbind("mouseleave"); // this avoids handler accumulation (each call to the following popover.mouseleave() adds a handler)
+                    popover.mouseleave(function(evt){
+                        that.timeoutIdHidePopover = setTimeout(hidePopover, 1000);
+                    });
+
+                    popover.unbind("mouseenter"); // this avoids handler accumulation (each call to the following popover.mouseenter() adds a handler)
+                    popover.mouseenter(function(evt){
+                        window.clearTimeout(that.timeoutIdHidePopover);
+                    });
+
+
+                    // hide it after some time even if the user does not put the mouse inside the popover
+                    that.timeoutIdHidePopover = setTimeout(hidePopover, 4000);
+                };
+
+                triggerHover(evt);
+                
+                return false;
+            },
+
             // Modal can be dynamically resized once the iframe is loaded, or on demand
             // TODO: options to set modal size
             openTargetInModal: function (evt, onDestroyCallback, options) {
@@ -459,7 +536,6 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                     var modal = $(iframe).parents(".bbm-modal");
                     if (!modal)
                         return;
-                    console.log("modal: ", modal);
                     var targetHeight = iframe.contentWindow.document.body.scrollHeight; // margins are not included (but paddings are)
                     var targetWidth = iframe.contentWindow.document.body.scrollWidth;
                     console.log("targetWidth: ", targetWidth);
@@ -553,24 +629,33 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                         ) {
                         inspiration_widgets = data;
                         returned_data["inspiration_widgets"] = inspiration_widgets;
-                        var inspiration_widget_uri = inspiration_widgets[inspiration_widgets.length - 1]; // for example: "local:Widget/52"
-                        //console.log("inspiration_widget_uri: ", inspiration_widget_uri);
+                        var inspiration_widget_uri = null;
+                        if ( "@id" in inspiration_widgets[inspiration_widgets.length - 1] )
+                        {
+                            inspiration_widget_uri = inspiration_widgets[inspiration_widgets.length - 1]["@id"]; // for example: "local:Widget/52"
 
-                        inspiration_widget_url = "/static/widget/creativity/?config="
-                            + Ctx.getUrlFromUri(inspiration_widget_uri)
-                            + "&target="
-                            + idea_id
-                            + locale_parameter; // example: "http://localhost:6543/widget/creativity/?config=/data/Widget/43&target=local:Idea/3#/"
-                        //console.log("inspiration_widget_url: ", inspiration_widget_url);
-                        returned_data["inspiration_widget_url"] = inspiration_widget_url;
+                            console.log("inspiration_widget_uri: ", inspiration_widget_uri);
 
-                        inspiration_widget_configure_url = "/static/widget/creativity/?admin=1"
-                            + locale_parameter
-                            + "#/admin/configure_instance?widget_uri="
-                            + Ctx.getUrlFromUri(inspiration_widget_uri)
-                            + "&target="
-                            + idea_id; // example: "http://localhost:6543/widget/creativity/?admin=1#/admin/configure_instance?widget_uri=%2Fdata%2FWidget%2F43&target=local:Idea%2F3"
-                        returned_data["inspiration_widget_configure_url"] = inspiration_widget_configure_url;
+                            inspiration_widget_url = "/static/widget/creativity/?config="
+                                + Ctx.getUrlFromUri(inspiration_widget_uri)
+                                + "&target="
+                                + idea_id
+                                + locale_parameter; // example: "http://localhost:6543/widget/creativity/?config=/data/Widget/43&target=local:Idea/3#/"
+                            //console.log("inspiration_widget_url: ", inspiration_widget_url);
+                            returned_data["inspiration_widget_url"] = inspiration_widget_url;
+
+                            inspiration_widget_configure_url = "/static/widget/creativity/?admin=1"
+                                + locale_parameter
+                                + "#/admin/configure_instance?widget_uri="
+                                + Ctx.getUrlFromUri(inspiration_widget_uri)
+                                + "&target="
+                                + idea_id; // example: "http://localhost:6543/widget/creativity/?admin=1#/admin/configure_instance?widget_uri=%2Fdata%2FWidget%2F43&target=local:Idea%2F3"
+                            returned_data["inspiration_widget_configure_url"] = inspiration_widget_configure_url;
+                        }
+                        else
+                        {
+                            console.log("error: inspiration widget has no @id field");
+                        }
                     }
 
                     if (data2
@@ -580,11 +665,19 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                         var vote_widgets = [];
                         for ( var i = 0; i < data2.length; ++i )
                         {
-                            vote_widgets.push({
-                                widget_uri: data2[i],
-                                vote_url: "/static/widget/vote/?config=" + data2[i] +encodeURIComponent("?target="+idea_id),
-                                configure_url: "/static/widget/vote/?admin=1#/admin/configure_instance?widget_uri=" +data2[i] + "&target=" + idea_id
-                            });
+                            if ( "@id" in data2[i] )
+                            {
+                                var widget_uri = data2[i]["@id"]; // for example: "local:Widget/52"
+                                vote_widgets.push({
+                                    widget_uri: widget_uri,
+                                    vote_url: "/static/widget/vote/?config=" + widget_uri +encodeURIComponent("?target="+idea_id),
+                                    configure_url: "/static/widget/vote/?admin=1#/admin/configure_instance?widget_uri=" +widget_uri + "&target=" + idea_id
+                                });
+                            }
+                            else
+                            {
+                                console.log("error: vote widget has no @id field");
+                            }
                         }
                         returned_data["vote_widgets"] = vote_widgets;
                     }
@@ -600,12 +693,30 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 return deferred.promise();
             },
 
+
+            getDraggedAnnotation: function () {
+                return this._draggedAnnotation;
+            },
+
+            setDraggedAnnotation: function (annotation, annotatorEditor) {
+                this._draggedAnnotation = annotation;
+                this._annotatorEditor = annotatorEditor;
+            },
+            
+            /**
+             * @set {Segment}
+             * Sets the current 
+             */
+            setDraggedSegment: function(segment){
+              this._draggedSegment = segment;
+            },
+
             /**
              * @return {Segment}
              */
             getDraggedSegment: function () {
-                var segment = this.draggedSegment;
-                this.draggedSegment = null;
+                var segment = this._draggedSegment;
+                //this.setDraggedSegment(null); not necessary;
 
                 if (segment) {
                     delete segment.attributes.highlights;
@@ -659,9 +770,14 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              * Saves the current annotation if there is any
              */
             saveCurrentAnnotationAsExtract: function () {
-                if (this.getCurrentUser().can(Permissions.EDIT_EXTRACT)) {
+                if (this.getCurrentUser().can(Permissions.ADD_EXTRACT)) {
                     this._annotatorEditor.element.find('.annotator-save').click();
+                } else {
+                    alert("Error: You don't have the permission to save this annotation as an extract.");
+                    this._annotatorEditor.element.find('.annotator-cancel').click();
                 }
+                //Saving the annotation as an extract is the end of the annotation's lifecycle
+                this.setDraggedAnnotation(null);
             },
 
             /**
@@ -758,7 +874,7 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              * Returns a fancy date (ex: a few seconds ago), or a formatted precise date if precise is true
              * @return {String}
              */
-            getNiceDateTime: function (date, precise, with_time) {
+            getNiceDateTime: function (date, precise, with_time, forbid_future) {
                 // set default values
                 precise = (precise === undefined) ? false : precise;
                 with_time = (with_time === undefined) ? true : with_time;
@@ -768,6 +884,13 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 // (Right now, the server gives UTC datetimes but is not explicit enough because it does not append "+0000". So Moment thinks that the date is not in UTC but in user's timezone. So we have to tell it explicitly, using .utc())
                 var momentDate = Moment.utc(date);
                 momentDate.local(); // switch off UTC mode, which had been activated using .utc()
+
+                if ( forbid_future ) { // server time may be ahead of us of some minutes. In this case, say it was now
+                    var now = Moment();
+                    var now_plus_delta = Moment().add(30, 'minutes');
+                    if ( momentDate > now && momentDate < now_plus_delta )
+                        momentDate = now;
+                }
 
                 if (momentDate) {
                     if (precise == true) {
@@ -788,10 +911,10 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
             },
 
             // without time
-            getNiceDate: function (date, precise) {
+            getNiceDate: function (date, precise, forbid_future) {
                 if (precise === undefined)
                     precise = true;
-                return this.getNiceDateTime(date, precise, false);
+                return this.getNiceDateTime(date, precise, false, true);
             },
 
             /**
@@ -800,6 +923,26 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              */
             getReadableDateTime: function (date) {
                 return this.getNiceDateTime(date, true);
+            },
+
+            getErrorMessageFromAjaxError: function(response) {
+                var message = response.responseText;
+                try {
+                    message = JSON.parse(message);
+                    return message.error;  // may be undefined
+                } catch (Exception) {
+                    // maybe a text message
+                }
+                var pos = message.indexOf('ERRMSG:');
+                if (pos > 0) {
+                    message = message.substr(pos+7);
+                    pos = message.indexOf("<");
+                    if (pos > 0) {
+                        message = message.substr(0, pos);
+                    }
+                    return message;
+                }
+                return null;
             },
 
             /**
@@ -912,7 +1055,7 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 return this.format("/user/id/{0}/avatar/{1}", userID, size);
             },
 
-            /**
+            /** This removes (rather than escape) all html tags
              * @param  {String} html
              * @return {String} The new string without html tags
              */
@@ -920,26 +1063,31 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 return html ? $.trim($('<div>' + html + '</div>').text()) : html;
             },
 
-            /**
-             * Sets the given panel as fullscreen closing all other ones
-             * @param {Panel} targetPanel
+            /** Convert all applicable characters to HTML entities
+             * @param  {String} html
              */
-            setFullscreen: function (targetPanel) {
-                //TODO: custom view for this
-                var panels = [
-                    assembl.ideaList,
-                    assembl.segmentList,
-                    assembl.ideaPanel,
-                    assembl.messageList,
-                    assembl.synthesisPanel
-                ];
+            htmlEntities: function(str){
+                return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            },
 
-                _.each(panels, function (panel) {
-                    if (targetPanel !== panel) {
-                        this.closePanel(panel);
-                        $(document.body).addClass('is-fullscreen');
-                    }
-                });
+            /**
+             * Use the browser's built-in functionality to quickly and safely 
+             * escape the string
+             */
+            escapeHtml: function (str) {
+              var div = document.createElement('div');
+              div.appendChild(document.createTextNode(str));
+              return div.innerHTML;
+            },
+              
+            /**
+             * UNSAFE with unsafe strings; only use on previously-escaped ones!
+             */
+            unescapeHtml: function (escapedStr) {
+              var div = document.createElement('div');
+              div.innerHTML = escapedStr;
+              var child = div.childNodes[0];
+              return child ? child.nodeValue : '';
             },
 
             /**
@@ -974,6 +1122,8 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
              * @event
              */
             onAjaxError: function (ev, jqxhr, settings, exception) {
+                if (jqxhr.handled)
+                    return;
 
                 // ignore Ajax errors which come from outside (sub-)domains. This is useful for oembed related errors
                 var getHostnameFromUrl = function(data) { // hostname examples: "localhost", "localhost:4321"
@@ -1058,6 +1208,43 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 }
             },
 
+            /**
+             * scrolls to any dom element in the messageList.
+             * Unlike scrollToMessage, the element must already be onscreen.
+             * This is also called by views/message.js
+             *
+             * @param el: DOM element to scroll to
+             * @param container: el's DOM container which will scroll
+             * @param callback:  will be called once animation is complete
+             * @param margin:  How much to scroll up or down from the top of the
+             * element.  Default is 30px for historical reasons
+             * @param animate:  Should the scroll be smooth
+             */
+            scrollToElement: function (el, container, callback, margin, animate) {
+              //console.log("context::scrollToElement called with: ", el, container, callback, margin, animate);
+              if (el && _.isFunction(container.size) && container.offset() !== undefined) {
+                var panelOffset = container.offset().top,
+                    panelScrollTop = container.scrollTop(),
+                    elOffset = el.offset().top,
+                    target;
+                margin = margin || 30;
+                if (animate === undefined) {
+                  animate = true;
+                }
+                target = elOffset - panelOffset + panelScrollTop - margin;
+                //console.log(elOffset, panelOffset, panelScrollTop, margin, target);
+                if(animate) {
+                  container.animate({ scrollTop: target }, { complete: callback });
+                }
+                else {
+                  container.scrollTop(target);
+                  if(_.isFunction(callback)) {
+                    callback();
+                  }
+                }
+              }
+            },
+
             getCurrentInterfaceType: function () {
                 var interfaceType = this.getCookieItem('interface');
                 if (!this.canUseExpertInterface()) {
@@ -1077,6 +1264,7 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
 
             makeLinksShowOembedOnHover: function(el) {
                 var popover = $("#popover-oembed");
+                var that = this;
                 
                 var triggerHover = function(evt){
                     popover.css('position','fixed');
@@ -1096,53 +1284,38 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                             popover.hide();
                         },
                         afterEmbed: function(){
-                            var screenWidth = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
-                            var screenHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
-                            var popoverWidth = $(this).outerWidth();
-                            var popoverHeight = $(this).outerHeight();
-                            var positionLeft = parseInt($(this).css('left'));
-                            var positionTop = parseInt($(this).css('top'));
-                            //console.log("screenWidth: ", screenWidth);
-                            //console.log("screenHeight: ", screenHeight);
-                            //console.log("popoverWidth: ", popoverWidth);
-                            //console.log("popoverHeight: ", popoverHeight);
-                            //console.log("positionLeft: ", positionLeft);
-                            //console.log("positionTop: ", positionTop);
-                            var newPositionLeft = positionLeft - popoverWidth/2;
-                            if ( newPositionLeft + popoverWidth > screenWidth )
-                                newPositionLeft = screenWidth - popoverWidth;
-                            if ( newPositionLeft < 0 )
-                                newPositionLeft = 0;
-                            var newPositionTop = positionTop;
-                            if ( newPositionTop + popoverHeight > screenHeight )
-                                newPositionTop = screenHeight - popoverHeight;
-                            if ( newPositionTop < 0 )
-                                newPositionTop = 0;
-                            //console.log("newPositionLeft: ", newPositionLeft);
-                            //console.log("newPositionTop: ", newPositionTop);
-                            $(this).css('left', newPositionLeft + 'px' );
-                            $(this).css('top', newPositionTop + 'px' );
+                            that.popoverAfterEmbed.apply(this);
                         }
+                    });
+
+                    var timeoutIdHidePopover = null;
+                    
+                    popover.unbind("mouseleave"); // this avoids handler accumulation (each call to the following popover.mouseleave() adds a handler)
+                    popover.mouseleave(function(evt){
+                        var that = this;
+                        timeoutIdHidePopover = setTimeout(function(){
+                            $(that).hide();
+                        }, 10);
+                    });
+
+                    popover.unbind("mouseenter"); // this avoids handler accumulation (each call to the following popover.mouseenter() adds a handler)
+                    popover.mouseenter(function(evt){
+                        window.clearTimeout(timeoutIdHidePopover);
                     });
                 };
 
                 el.find("a").mouseenter(function(evt){
-                    var timeoutId = null;
+                    var timeoutIdShowPopover = null;
                     var that = this;
-                    timeoutId = window.setTimeout(function(){
+                    timeoutIdShowPopover = window.setTimeout(function(){
                         triggerHover.call(that, evt);
                     }, 800); // => this is how much time the mouse has to stay on the link in order to trigger the popover
                     $(this).mouseout(function(){
-                        window.clearTimeout(timeoutId);
+                        window.clearTimeout(timeoutIdShowPopover);
                     });
                 });
 
-                popover.mouseleave(function(evt){
-                    var that = this;
-                    setTimeout(function(){
-                        $(that).hide();
-                    }, 10);
-                });
+                
             },
 
             /**
@@ -1170,34 +1343,22 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
                 $('.tooltip').remove();
             },
 
-            /**
-             * @init
-             */
-            initClipboard: function () {
-                if (!assembl.clipboard) {
-                    Zeroclipboard.setDefaults({
-                        moviePath: '/static/js/bower/zeroclipboard/ZeroClipboard.swf'
-                    });
-                    assembl.clipboard = new Zeroclipboard();
+            getAbsoluteURLFromRelativeURL: function(url) {
+                if ( url && url[0] == "/" )
+                    url = url.substring(1);
+                return this.format('{0}//{1}/{2}', location.protocol, location.host, url);
+            },
 
-                    assembl.clipboard.on(assembl.clipboard, 'mouseover', function () {
-                        $(this).trigger('mouseover');
-                    });
+            getAbsoluteURLFromDiscussionRelativeURL: function(url) {
+                if ( url && url[0] == "/" )
+                    url = url.substring(1);
+                return this.format('{0}//{1}/{2}/{3}', location.protocol, location.host, this.getDiscussionSlug(), url);
+            },
 
-                    assembl.clipboard.on('mouseout', function () {
-                        $(this).trigger('mouseout');
-                    });
-                }
-
-                var that = this;
-                $('[data-copy-text]').each(function (i, el) {
-                    var text = el.getAttribute('data-copy-text');
-                    text = that.format('{0}//{1}/{2}{3}', location.protocol, location.host, that.getDiscussionSlug(), text);
-                    el.removeAttribute('data-copy-text');
-
-                    el.setAttribute('data-clipboard-text', text);
-                    assembl.clipboard.glue(el);
-                });
+            getRelativeURLFromDiscussionRelativeURL: function(url) {
+                if ( url && url[0] == "/" )
+                    url = url.substring(1);
+                return this.format('/{0}/{1}', this.getDiscussionSlug(), url);
             },
 
             isNewUser: function () {
@@ -1237,7 +1398,136 @@ define(['../app', 'jquery', '../utils/permissions', '../utils/roles', 'moment', 
 
                 $(document).on('click', '.dropdown-label', this.onDropdownClick);
                 $(document).on('ajaxError', this.onAjaxError);
+            },
+
+            debug: function(view, msg){
+                var log = debug(view+':');
+                log(msg);
+            },
+
+            /*
+             * Get from database up-to-date information about current logged-in user.
+             * And update HTML script tags content accordingly.
+             */
+            updateCurrentUser: function() {
+                var that = this;
+                var user = null;
+                if (this.getCurrentUserId()) {
+                    user = this.getCurrentUser();
+                    user.fetch({
+                        success: function(model, resp) {
+                            //that.setCurrentUser(user);
+                            user.fetchPermissionsToScriptTag();
+                            user.toScriptTag('current-user-json');
+                            that.loadCsrfToken(true);
+                        }
+                    });
+                } else {
+                    /*
+                    user = new Agents.Collection().getUnknownUser();
+                    that.setCurrentUser(user);
+                    that.loadCsrfToken(true);
+                    */
+                }
+            },
+
+            getJsonFromScriptTag: function (id) {
+                var script = document.getElementById(id),
+                    json;
+
+                if (!script) {
+                    console.login(this.format("Script tag #{0} doesn't exist", id));
+                    return {};
+                }
+
+                try {
+                    json = JSON.parse(script.textContent);
+                } catch (e) {
+                    console.log(script.textContent);
+                    throw new Error("Invalid json. " + e.message);
+                }
+                return json;
+            },
+
+            writeJsonToScriptTag: function (json, id) {
+                var script = document.getElementById(id);
+
+                if (!script) { // TODO: maybe we could create it?
+                    console.login(this.format("Script tag #{0} doesn't exist", id));
+                    return;
+                }
+
+                try {
+                    script.textContent = JSON.stringify(json);
+                } catch (e) {
+                    throw new Error("Invalid json. " + e.message);
+                }
+            },
+            /**
+             * Executor of lazy code
+             * ex :
+             *
+             * Normale code
+             *
+             * $(document).ready(function() {
+             *  // a lot of li's, lets say 500
+             *   $('li').each(function() {
+             *       $(this).bind('click', function() {
+             *           alert('Yeah you clicked me');
+             *       });
+             *   });
+             * });
+             *
+             * After refactoring
+             *
+             *  $(document).ready(function() {
+             *       // a lot of li's, lets say 500
+             *       $('li').each(function() {
+             *       var self = this, doBind = function() {
+             *           $(self).bind('click', function() {
+             *               alert('Yeah you clicked me');
+             *           });
+             *       };
+             *       $.queue.add(doBind, this);
+             *       });
+             *  });
+             *
+             *
+             * */
+            queue: {
+                _timer: null,
+                _queue: [],
+                add: function(fn, context, time) {
+                    var setTimer = function(time) {
+                        queue._timer = setTimeout(function() {
+                            time = queue.add();
+                            if (queue._queue.length) {
+                                setTimer(time);
+                            }
+                        }, time || 2);
+                    }
+
+                    if (fn) {
+                        queue._queue.push([fn, context, time]);
+                        if (queue._queue.length == 1) {
+                            setTimer(time);
+                        }
+                        return;
+                    }
+
+                    var next = queue._queue.shift();
+                    if (!next) {
+                        return 0;
+                    }
+                    next[0].call(next[1] || window);
+                    return next[2];
+                },
+                clear: function() {
+                    clearTimeout(queue._timer);
+                    queue._queue = [];
+                }
             }
+
         }
 
         return new Context();

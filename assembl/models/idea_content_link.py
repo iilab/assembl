@@ -115,13 +115,15 @@ class IdeaContentLink(DiscussionBoundBase):
 def idea_content_link_idea_set_listener(target, value, oldvalue, initiator):
     print "idea_content_link_idea_set_listener for target: %s set to %s, was %s" % (target, value, oldvalue)
     if oldvalue is not None:
-        oldvalue.send_to_changes()
-        for ancestor in oldvalue.get_all_ancestors():
-            ancestor.send_to_changes()
+        with oldvalue.db.no_autoflush:
+            oldvalue.send_to_changes()
+            for ancestor in oldvalue.get_all_ancestors():
+                ancestor.send_to_changes()
     if value is not None:
-        value.send_to_changes()
-        for ancestor in value.get_all_ancestors():
-            ancestor.send_to_changes()
+        with value.db.no_autoflush:
+            value.send_to_changes()
+            for ancestor in value.get_all_ancestors():
+                ancestor.send_to_changes()
 
 
 class IdeaContentWidgetLink(IdeaContentLink):
@@ -234,7 +236,7 @@ class Extract(IdeaContentPositiveLink):
         nullable=False, index=True,
         info={'rdf': QuadMapPatternS(None, CATALYST.relevantToConversation)})
     discussion = relationship(
-        Discussion, backref='extracts',
+        Discussion, backref=backref('extracts', cascade="all, delete-orphan"),
         info={'rdf': QuadMapPatternS(None, ASSEMBL.in_conversation)})
 
     important = Column('important', Boolean, server_default='0')
@@ -323,32 +325,6 @@ class Extract(IdeaContentPositiveLink):
             retval['url'] = self.content.url
         return retval
 
-    def serializable(self):
-        json = {
-            '@id': self.uri_generic(self.id),
-            '@type': self.external_typename(),
-            'annotator_schema_version': 'v1.0',
-            'quote': self.body,
-            'ranges': [tfi.__json__() for tfi
-                       in self.text_fragment_identifiers],
-            'target': self.target,
-            'important': self.important,
-            'created': self.creation_date.isoformat(),
-            'idCreator': AgentProfile.uri_generic(self.creator_id),
-            #'user': self.creator.get_uri(),
-            'text': self.annotation_text,
-        }
-        if self.idea_id:
-            json['idIdea'] = Idea.uri_generic(self.idea_id)
-            #json['text'] += '<a href="%s">%s</a>' % (
-            #   self.idea.get_uri(), self.idea.short_title)
-        if isinstance(self.content, Post):
-            json['idPost'] = Post.uri_generic(self.content.id)  # legacy
-            #json['url'] = self.post.get_uri()
-        elif self.content.type == 'webpage':
-            json['uri'] = self.content.url
-        return json
-
     def __repr__(self):
         return "<Extract %d %s>" % (self.id or -1, repr(self.body[:20]))
 
@@ -436,7 +412,7 @@ class IdeaContentNegativeLink(IdeaContentLink):
     id = Column(Integer, ForeignKey(
         'idea_content_link.id',
         ondelete='CASCADE', onupdate='CASCADE'
-    ), primary_key=True)
+    ), nullable=False, primary_key=True)
 
     __mapper_args__ = {
         'polymorphic_identity': 'assembl:postDelinkedToIdea_abstract',
@@ -468,7 +444,7 @@ class TextFragmentIdentifier(DiscussionBoundBase):
     id = Column(Integer, primary_key=True,
                 info={'rdf': QuadMapPatternS(None, ASSEMBL.db_id)})
     extract_id = Column(Integer, ForeignKey(
-        Extract.id, ondelete="CASCADE"), index=True)
+        Extract.id, ondelete="CASCADE"), nullable=False, index=True)
     xpath_start = Column(String)
     offset_start = Column(Integer)
     xpath_end = Column(String)

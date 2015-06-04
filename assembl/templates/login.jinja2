@@ -1,4 +1,31 @@
 {% extends 'base.jinja2' %}
+{# TODO: mutualise this among all guest pages (login, register, forgot password, etc) #}
+{% if discussion %}
+  {% block page_title %}{{ discussion.topic }}{% endblock %}
+{% endif %}
+{% block meta_tags %}
+  <meta name="description" content="">{# not shown because introduction may not be public and has HTML, so it should be filtered. TODO: filter. <meta property="description" content="{{ discussion.introduction }}" />#}
+  {% if discussion %}
+    <meta property="og:title" content="{{ discussion.topic }}" />
+  {% else %}
+    <meta property="og:title" content="Assembl" />
+  {% endif %}
+  <meta property="og:type" content="website" />
+  {#<meta property="og:site_name" content="Assembl" />#}
+  {#<meta property="og:locale" content="fr_FR" />#}
+  {# not shown because introduction may not be public and has HTML, so it should be filtered. TODO: filter. <meta property="og:description" content="{{ discussion.introduction }}" />#}
+  {% if discussion %}
+    <meta property="og:url" content="{{ request.application_url }}/{{ discussion_slug }}/login" />
+  {% else %}
+    <meta property="og:url" content="{{ request.application_url }}/login" />
+  {% endif %}
+  <meta property="og:image" content="{{ request.application_url }}/static/css/themes/default/img/crowd2.jpg" />
+  <meta property="og:image:width" content="1600" />
+  <meta property="og:image:height" content="222" />
+  <meta property="og:image" content="{{ request.application_url }}/static/css/themes/default/img/logo.png" />
+  <meta property="og:image:width" content="111" />
+  <meta property="og:image:height" content="35" />
+{% endblock meta_tags %}
 
 {% macro form(name, title, image) %}
   {% if name in providers %}
@@ -29,7 +56,7 @@
 
 <div class="loginbox sign-in">
     <header>
-        <h1>{{ gettext("Log in to Assembl") }}</h1>
+        <h1>{% if discussion %}{{ gettext("Log in to \"%(discussion_title)s\"")|format(discussion_title=discussion.topic) }}{% else %}{{ gettext("Log in to Assembl") }}{% endif %}</h1>
     </header>
 
     <div class="content">

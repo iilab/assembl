@@ -1,45 +1,17 @@
 'use strict';
 
-define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/types', 'views/message', 'views/synthesisMessage', 'utils/i18n'],
-    function (Backbone, _, ckeditor, Assembl, Ctx, Types, MessageView, SynthesisMessageView, i18n) {
+define(['backbone.marionette', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/types', 'views/message', 'views/synthesisMessage', 'utils/i18n'],
+    function (Marionette, _, ckeditor, Assembl, Ctx, Types, MessageView, SynthesisMessageView, i18n) {
 
         /**
          * @class views.MessageFamilyView
          */
-        var MessageFamilyView = Backbone.View.extend({
-            /**
-             * @type {String}
-             */
-            tagName: 'div',
-
+        var MessageFamilyView = Marionette.ItemView.extend({
+            template: '#tmpl-messageFamily',
             /**
              * @type {String}
              */
             className: 'message-family-container',
-
-            /**
-             * @init
-             * @param {MessageModel} obj the model
-             * @param {Array[boolean]} last_sibling_chain which of the view's ancestors
-             *   are the last child of their respective parents.
-             */
-            initialize: function (options, last_sibling_chain) {
-
-                if (_.isUndefined(last_sibling_chain)) {
-                    last_sibling_chain = [];
-                }
-                this.last_sibling_chain = last_sibling_chain;
-                this.messageListView = options.messageListView;
-                this.collapsed = options.collapsed;
-                //this.model.on('change:collapsed', this.onCollapsedChange, this);
-                //this.listenTo(this.model, 'change:collapsed', this.onCollapsedChange);
-            },
-
-            /**
-             * The thread message template
-             * @type {_.template}
-             */
-            template: Ctx.loadTemplate('messageFamily'),
 
             /**
              * Stores the current level
@@ -48,54 +20,77 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/ty
             currentLevel: null,
 
             /**
+             * @init
+             * @param {MessageModel} obj the model
+             * @param {Array[boolean]} options.last_sibling_chain which of the view's ancestors
+             *   are the last child of their respective parents.
+             */
+            initialize: function (options) {
+
+                if (_.isUndefined(options.last_sibling_chain)) {
+                  this.last_sibling_chain = [];
+                }
+                else {
+                  this.last_sibling_chain = options.last_sibling_chain;
+                }
+
+                this.messageListView = options.messageListView;
+                this.collapsed = options.collapsed;
+                this.currentLevel = options.currentLevel;
+                this.hasChildren = (_.size(options.hasChildren) > 0);
+                //this.model.on('change:collapsed', this.onCollapsedChange, this);
+                //this.listenTo(this.model, 'change:collapsed', this.onCollapsedChange);
+
+                this.level = this.currentLevel !== null ? this.currentLevel : 1;
+
+                if (!_.isUndefined(this.level)) {
+                    this.currentLevel = this.level;
+                }
+            },
+
+            serializeData: function(){
+              return {
+                id: this.model.get('@id'),
+                level: this.level,
+                last_sibling_chain: this.last_sibling_chain,
+                hasChildren: this.hasChildren
+              }
+            },
+
+            /**
              * The render
              * @param {Number} [level] The hierarchy level
              * @return {MessageView}
              */
-            render: function (level) {
-                var data = this.model.toJSON(),
-                    children,
-                    messageView;
+            onRender: function () {
+                var messageView;
 
-                level = this.currentLevel !== null ? this.currentLevel : 1;
                 Ctx.removeCurrentlyDisplayedTooltips(this.$el);
-                if (!_.isUndefined(level)) {
-                    this.currentLevel = level;
+
+                var messageViewClass = MessageView;
+                if (!this.model.isInstance(Types.POST)) {
+                    console.error("not a post?");
                 }
-
-                var messageViewClass = undefined;
-                var messageType = this.model.get('@type');
-                switch (messageType) {
-                    case Types.ASSEMBL_POST:
-                    case Types.EMAIL:
-                    case Types.POST_WITH_METADATA:
-                    case Types.IDEA_PROPOSAL_POST:
-                        messageViewClass = MessageView;
-                        break;
-
-                    case Types.SYNTHESIS_POST:
-                        messageViewClass = SynthesisMessageView;
-                        break;
-                    default:
-                        console.log("messageFamily.render():  WARNING:  Unknown Post type: ", messageType, "creating a default MessageView");
-                        messageViewClass = MessageView;
+                if (this.model.getBEType() == Types.SYNTHESIS_POST) {
+                    messageViewClass = SynthesisMessageView;
                 }
 
                 messageView = new messageViewClass({
                     model: this.model,
-                    messageListView: this.messageListView
+                    messageListView: this.messageListView,
+                    messageFamilyView: this
                 });
 
-                messageView.render();
+                messageView.triggerMethod("render");
                 this.messageListView.renderedMessageViewsCurrent[this.model.id] = messageView;
 
-                data['id'] = data['@id'];
-                data['level'] = level;
-                data['last_sibling_chain'] = this.last_sibling_chain;
-                data['hasChildren'] = this.hasChildren;
+                //data['id'] = data['@id'];
+                //data['level'] = level;
+                //data['last_sibling_chain'] = this.last_sibling_chain;
+                //data['hasChildren'] = this.hasChildren;
 
-                if (level > 1) {
-                    if (this.last_sibling_chain[level - 1]) {
+                if (this.level > 1) {
+                    if (this.last_sibling_chain[this.level - 1]) {
                         this.$el.addClass('last-child');
                     } else {
                         this.$el.addClass('child');
@@ -104,17 +99,14 @@ define(['backbone', 'underscore', 'ckeditor', 'app', 'common/context', 'utils/ty
                     this.$el.addClass('bx bx-default root');
                 }
 
-                this.el.setAttribute('data-message-level', data['level']);
+                this.el.setAttribute('data-message-level',  this.level);
 
-                this.$el.html(this.template(data));
+                //this.$el.html(this.template(data));
                 Ctx.initTooltips(this.$el);
                 this.$el.find('>.message-family-arrow>.message').replaceWith(messageView.el);
 
                 this.onCollapsedChange();
 
-                Ctx.initClipboard();
-
-                return this;
             },
 
             events: {

@@ -37,6 +37,12 @@ $textProfile: #515151;
     .socketIndicator {
 
     }
+
+    .potential-discussion-dropdown-container {
+      float: right;
+      line-height: 45px;
+      margin-left: 5px;
+    }
   }
 
   .navbar-center {
@@ -58,6 +64,11 @@ $textProfile: #515151;
     position: absolute;
     right: 0;
     line-height: $theme_header_height;
+
+    .help {
+      font-size: 25px;
+      color: $txtGray;
+    }
 
     ul > li{
       list-style: none;

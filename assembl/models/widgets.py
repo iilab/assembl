@@ -54,9 +54,7 @@ class Widget(DiscussionBoundBase):
 
     def __init__(self, *args, **kwargs):
         super(Widget, self).__init__(*args, **kwargs)
-        if self.id is None:
-            # object creation
-            self.interpret_settings(self.settings_json)
+        self.interpret_settings(self.settings_json)
 
     def idea_data(self, user_id):
         return []
@@ -163,7 +161,7 @@ class Widget(DiscussionBoundBase):
     def has_notification(self):
         settings = self.settings_json
         notifications = settings.get('notifications', [])
-        now = datetime.now()
+        now = datetime.utcnow()
 
         for notification in notifications:
             try:
@@ -269,7 +267,7 @@ class BaseIdeaDescendantsCollection(AbstractCollectionDefinition):
         # using base_idea_id() is cheating, but a proper join fails.
         descendants_subq = self.descendants.bindparams(
             base_idea_id=parent_instance.base_idea_id()).alias()
-        query = Widget.db.query(descendant).filter(
+        query = instance.db.query(descendant).filter(
             descendant.id.in_(descendants_subq)).join(
             widget, widget.id == parent_instance.id)
         return query.count() > 0
@@ -466,7 +464,7 @@ class CreativitySessionWidget(IdeaCreatingWidget):
 
     def notification_data(self, data):
         end = data.get('end', None)
-        time_to_end = (datetime.strptime(end, ISO_8601_FORMAT) - datetime.now()
+        time_to_end = (datetime.strptime(end, ISO_8601_FORMAT) - datetime.utcnow()
                        ).total_seconds() if end else None
         participant_ids = set()
         # participants from user_configs
@@ -884,7 +882,7 @@ MultiCriterionVotingWidget.criteria_links = relationship(
 Idea.has_criterion_links = relationship(VotingCriterionWidgetLink)
 
 MultiCriterionVotingWidget.criteria = relationship(
-    Idea,  # Criterion
+    Idea,
     viewonly=True, secondary=VotingCriterionWidgetLink.__table__,
     primaryjoin=MultiCriterionVotingWidget.idea_links.of_type(VotingCriterionWidgetLink),
     secondaryjoin=VotingCriterionWidgetLink.idea,

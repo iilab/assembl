@@ -1,3 +1,6 @@
+{% macro showShareButton() -%}
+<a href="<%= direct_link_relative_url %>" data-href="<%= share_link_url %>" class="js_openTargetInPopOver" data-popover-width="300" data-popover-height="71" data-popover-scrolling=""><i class="icon-download"></i>{{ gettext("Share") }}</a>
+{%- endmacro %}
 <div class="panel-body">
     <% if( idea ) { %>
     <fieldset id="ideaPanel-section-summary" class="panel-section mtn">
@@ -95,19 +98,24 @@
       <% } %>
 
       <div class="postitlist"></div>
+
       <% if (canAddExtracts) { %>
       <div class="mbs">
           <p>{{ gettext('Add extracts by dragging them in this panel from the clipboard or messages') }}</p>
       </div>
       <% } %>
+
     </fieldset>
 
     <fieldset class="panel-section ideaPanel-section-actions">
+        <div>{{ showShareButton() }}</div>
+
         <% if (canDelete) { %>
         <div class="fr">
             <a href="#" class="js_ideaPanel-deleteBtn" data-toggle="tooltip" title="{{gettext('Delete this idea completely')}}">{{ gettext('Delete idea') }}</a>
         </div>
         <% }
+
         if (canEditExtracts) { %>
         <a href="#" class="js_ideaPanel-clearBtn" data-toggle="tooltip" title="{{gettext('Remove all extracts from this idea.  Removed extracts will be available in your clipboard')}}">{{ gettext('Remove all extracts') }}</a>
         <% } %>
@@ -118,8 +126,13 @@
     <fieldset class="panel-section ideaPanel-section-bottom mtl"></fieldset>
 
     <% } else { %>
-        <div class="mls mts">
-            <p>{{ gettext('Please select an idea in the table of ideas') }}</p>
+        <div class="emptyIdeaPanelContainer phs">
+            <div class="emptyIdeaPanelContent">
+                <p class="tac emptyIdeaIcon"><i class="icon-idea"></i></p>
+                <p class="helperIdea tac">{{ gettext('No idea selected') }}</p>
+                <p class="tac mvl">{{ gettext('Choose an idea in the Table of ideas to explore the discussion or close this panel as you will have open')}}</p>
+                <p class="emptyIdeaIcon2 tac mtxl"><i class="icon-imported"></i></p>
+            </div>
         </div>
     <% } %>
 </div>

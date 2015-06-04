@@ -12,6 +12,7 @@ from StringIO import StringIO
 from os.path import join, dirname, split, normpath
 # Other calls to os.path rarely mostly don't work remotely. Use locally only.
 import os.path
+from distutils.version import LooseVersion
 
 import fabric.operations
 from fabric.operations import put, get
@@ -52,7 +53,8 @@ def supervisor_restart():
     with hide('running', 'stdout'):
         supervisord_cmd_result = venvcmd("supervisorctl shutdown")
     #Another supervisor,upstart, etc may be watching it, give it a little while
-    sleep(2);
+    #Ideally we should wait, but I didn't have time to code it.
+    sleep(30);
     #If supervisor is already started, this will do nothing
     execute(supervisor_process_start, 'virtuoso')
 
@@ -73,7 +75,7 @@ def supervisor_process_start(process_name):
             exit()
         else:
             print(red('Supervisord doesn\'t seem to be running, trying to start it'))
-            supervisord_cmd_result = venvcmd("supervisord")
+            supervisord_cmd_result = venvcmd("supervisord -c %s" % get_supervisord_conf())
             if supervisord_cmd_result.failed:
                 print(red('Failed starting supervisord'))
                 exit()
@@ -124,6 +126,9 @@ def supervisor_process_stop(process_name):
             if(status == 'STOPPED'):
                 print(green("%s is stopped" % process_name))
                 break
+            if(status == 'FATAL'):
+                print(red("%s had a fatal error" % process_name))
+                break
             elif(status == 'RUNNING'):
                 venvcmd("supervisorctl stop %s" % process_name)
             elif(status == 'STOPPING'):
@@ -136,6 +141,44 @@ def supervisor_process_stop(process_name):
             print(status_cmd_result)
             exit()
 
+
+def maintenance_mode_start():
+    assert env.uses_uwsgi
+    supervisor_process_stop('prod:uwsgi')
+    supervisor_process_start('maintenance_uwsgi')
+    supervisor_process_stop('celery_notify_beat')
+    supervisor_process_stop('source_reader')
+
+
+def maintenance_mode_stop():
+    assert env.uses_uwsgi
+    supervisor_process_start('celery_notify_beat')
+    supervisor_process_start('source_reader')
+    supervisor_process_stop('maintenance_uwsgi')
+    supervisor_process_start('prod:uwsgi')
+
+
+@task
+def app_majorupdate():
+    "This update is so major that assembl needs to be put in maintenance mode. Only for production."
+    execute(database_dump)
+    execute(updatemaincode)
+    execute(app_update_dependencies)
+    execute(app_compile_nodbupdate)
+    maintenance_mode_start()
+    execute(app_db_update)
+    if env.uses_global_supervisor:
+        print(cyan('Asking supervisor to restart %(projectname)s' % env))
+        run("sudo /usr/bin/supervisorctl restart %(projectname)s" % env)
+    else:
+        #supervisor config file may have changed
+        venvcmd("supervisorctl reread")
+        venvcmd("supervisorctl update")
+        venvcmd("supervisorctl restart celery_imap changes_router celery_notification_dispatch celery_notify")
+        maintenance_mode_stop()
+    execute(webservers_reload)
+
+
 @task
 def app_reload():
     """
@@ -145,7 +188,10 @@ def app_reload():
         print(cyan('Asking supervisor to restart %(projectname)s' % env))
         run("sudo /usr/bin/supervisorctl restart %(projectname)s" % env)
     else:
-        venvcmd("supervisorctl restart celery_imap changes_router celery_notification_dispatch celery_notify celery_notify_beat")
+        #supervisor config file may have changed
+        venvcmd("supervisorctl reread")
+        venvcmd("supervisorctl update")
+        venvcmd("supervisorctl restart celery_imap changes_router celery_notification_dispatch celery_notify celery_notify_beat source_reader")
         if env.uses_uwsgi:
             venvcmd("supervisorctl restart prod:uwsgi")
     """ This will log everyone out, hopefully the code is now resilient enough
@@ -205,12 +251,12 @@ def update_requirements(force=False):
     update external dependencies on remote host
     """
     print(cyan('Updating requirements using PIP'))
-    venvcmd('pip install -U "pip>=6" --download-cache ~/.pip/cache')
+    venvcmd('pip install -U "pip>=6" ')
 
     if force:
-        cmd = "%(venvpath)s/bin/pip install -I -r %(projectpath)s/requirements.txt --download-cache ~/.pip/cache" % env
+        cmd = "%(venvpath)s/bin/pip install -I -r %(projectpath)s/requirements.txt" % env
     else:
-        cmd = "%(venvpath)s/bin/pip install -r %(projectpath)s/requirements.txt --download-cache ~/.pip/cache" % env
+        cmd = "%(venvpath)s/bin/pip install -r %(projectpath)s/requirements.txt" % env
     run("yes w | %s" % cmd)
 
 
@@ -325,6 +371,7 @@ def bootstrap_from_checkout():
     """
     execute(updatemaincode)
     execute(build_virtualenv)
+    execute(app_update_dependencies)
     execute(app_compile_nodbupdate)
     execute(app_db_install)
     execute(app_reload)
@@ -360,7 +407,10 @@ def updatemaincode():
 
 
 def app_setup():
-     venvcmd('pip install -U "pip>=6" --download-cache ~/.pip/cache')
+     # do the requirements separately to update the non-static versions.
+     # This broke app_update_noupdate
+     # And was done in the non DRY way
+     # execute(update_requirements)
      venvcmd('pip install -e ./')
      venvcmd('assembl-ini-files %s' % (env.ini_file))
 
@@ -371,6 +421,7 @@ def app_fullupdate():
     Full Update: Update to latest git, update dependencies and compile app.
     You need internet connectivity, and can't run this on a branch.
     """
+    execute(database_dump)
     execute(updatemaincode)
     execute(app_compile)
 
@@ -382,6 +433,7 @@ def app_update():
     Useful for deploying hotfixes.  You need internet connectivity, and can't
     run this on a branch.
     """
+    execute(database_dump)
     execute(updatemaincode)
     execute(app_compile_noupdate)
 
@@ -394,7 +446,7 @@ def app_update_dependencies():
     execute(update_requirements, force=False)
     execute(update_compass)
     execute(update_bower)
-    execute(bower_install)
+    execute(bower_update)
 
 
 @task
@@ -426,10 +478,9 @@ def app_compile_noupdate():
 @task
 def app_compile_nodbupdate():
     "Separated mostly for tests, which need to run alembic manually"
-    execute(virtuoso_install_if_absent)
+    execute(virtuoso_install_or_upgrade)
     execute(app_setup)
     execute(compile_stylesheets)
-    execute(bower_install)
     execute(compile_messages)
     execute(minify_javascript_maybe)
 
@@ -505,7 +556,7 @@ def install_basetools():
     if env.mac:
         run('cd /tmp; curl -O https://raw.github.com/pypa/pip/master/contrib/get-pip.py')
         sudo('python /tmp/get-pip.py')
-        sudo('pip install virtualenv --download-cache ~/.pip/cache')
+        sudo('pip install virtualenv')
     else:
         sudo('apt-get install -y python-virtualenv python-pip')
         sudo('apt-get install -y git')
@@ -538,16 +589,24 @@ def bower_cmd(cmd, relative_path='.'):
         with cd(relative_path):
             run(' '.join((node_cmd, bower_cmd, '--allow-root',cmd)))
 
-
+def _bower_foreach_do(cmd):
+    bower_cmd(cmd)
+    bower_cmd(cmd, 'assembl/static/widget/card')
+    bower_cmd(cmd, 'assembl/static/widget/session')
+    bower_cmd(cmd, 'assembl/static/widget/video')
+    bower_cmd(cmd, 'assembl/static/widget/vote')
+    bower_cmd(cmd, 'assembl/static/widget/creativity')
+    bower_cmd(cmd, 'assembl/static/widget/share')
+    
 @task
 def bower_install():
     """ Normally not called manually """
-    bower_cmd('install')
-    bower_cmd('install', 'assembl/static/widget/card')
-    bower_cmd('install', 'assembl/static/widget/session')
-    bower_cmd('install', 'assembl/static/widget/video')
-    bower_cmd('install', 'assembl/static/widget/vote')
-    bower_cmd('install', 'assembl/static/widget/creativity')
+    execute(_bower_foreach_do, 'install')
+
+@task
+def bower_update():
+    """ Normally not called manually """
+    execute(_bower_foreach_do, 'update')
 
 
 @task
@@ -571,13 +630,15 @@ def install_builddeps():
             run('brew install autoconf')
         if not exists('/usr/local/bin/automake'):
             run('brew install automake')
+        if not exists('/usr/local/bin/pandoc'):
+            run('brew install pandoc')
         # glibtoolize, bison, flex, gperf are on osx by default.
         # brew does not know aclocal, autoheader... 
         # They exist on macports, but do we want to install that?
     else:
         sudo('apt-get install -y build-essential python-dev ruby-builder')
-        sudo('apt-get install -y nodejs nodejs-legacy  npm')
-        sudo('apt-get install -y automake bison flex gperf  libxml2-dev libssl-dev libreadline-dev')
+        sudo('apt-get install -y nodejs nodejs-legacy npm pandoc')
+        sudo('apt-get install -y automake bison flex gperf  libxml2-dev libssl-dev libreadline-dev gawk')
 
         #Runtime requirements (even in develop)
         sudo('apt-get install -y redis-server memcached unixodbc-dev')
@@ -623,8 +684,7 @@ def install_ruby_build():
         run_output = run('ruby-build --version')
     if not run_output.failed:
         match = version_regex.match(run_output)
-        version = float(match.group(1))
-
+        version = LooseVersion(match.group(1))
         if version < env.ruby_build_min_version:
             print(red("ruby-build %s is too old (%s is required), reinstalling..." % (version, env.ruby_build_min_version)))
             install = True
@@ -881,6 +941,8 @@ def get_virtuoso_exec():
     virtuoso_exec = os.path.join(get_virtuoso_root(), 'bin', 'virtuoso-t')
     return virtuoso_exec
 
+def get_supervisord_conf():
+    return os.path.join(env.projectpath, "supervisord.conf")
 
 def get_virtuoso_src():
     config = get_config()
@@ -924,7 +986,7 @@ def virtuoso_reconstruct_save_db():
         if backup.failed:
             print "ERROR: Normal backup failed."
             # these were created by previous attempt
-            run('rm virtuoso-temp.db virtuoso.pxa virtuoso.trx virtuoso.lck')
+            run('rm -f virtuoso-temp.db virtuoso.pxa virtuoso.trx virtuoso.lck')
             run('%s +crash-dump +foreground' % (get_virtuoso_exec(),))
 
 
@@ -948,25 +1010,44 @@ def virtuoso_reconstruct_db():
     execute(virtuoso_reconstruct_restore_db)
 
 
-def virtuoso_install_if_absent():
+def virtuoso_install_or_upgrade():
     with settings(warn_only=True), hide('warnings', 'stdout', 'stderr'):
         ls_cmd = run("ls %s" % get_virtuoso_exec())
-    if ls_cmd.failed:
+        ls_supervisord_conf_cmd = run("ls %s" % get_supervisord_conf())
+    if ls_cmd.failed or ls_supervisord_conf_cmd:
         print(red("Virtuso not installed, installing."))
         execute(virtuoso_source_install)
+    else:
+        execute(virtuoso_source_upgrade)
 
+@task
+def virtuoso_source_upgrade():
+    "Upgrades the virtuoso server.  Currently doesn't check if we are already using the latest version."
+    #Virtuoso must be running before the process starts, so that we can 
+    #gracefully stop it later to ensure there is no trx file active.  
+    #trx files are not compatible between virtuoso versions
+    supervisor_process_start('virtuoso')
+    execute(virtuoso_source_install)
+    
 
 @task
 def virtuoso_source_install():
-    "Install the virtuoso server locally"
+    "Install the virtuoso server locally, normally not called directly (use virtuoso_source_upgrade instead)"
     virtuoso_root = get_virtuoso_root()
     virtuoso_src = get_virtuoso_src()
     branch = get_config().get('virtuoso', 'virtuoso_branch')
 
     if exists(virtuoso_src):
         with cd(virtuoso_src):
+            already_built = exists('binsrc/virtuoso/virtuoso-t')
+            current_checkout = run('git rev-parse HEAD')
+            if already_built and current_checkout == branch:
+                return
             run('git fetch')
             run('git checkout '+branch)
+            new_checkout = run('git rev-parse HEAD')
+            if already_built and new_checkout == current_checkout:
+                return
     else:
         run('mkdir -p ' + dirname(virtuoso_src))
         virtuso_github = 'https://github.com/openlink/virtuoso-opensource.git'
@@ -976,14 +1057,20 @@ def virtuoso_source_install():
     with cd(virtuoso_src):
         if not exists(join(virtuoso_src, 'configure')):
             run('./autogen.sh')
+        else:
+            #Otherwise, it simply doesn't always work...
+            run('make distclean')
         #This does not work if we change the path or anything else in local.ini
         #if exists(join(virtuoso_src, 'config.status')):
         #    run('./config.status --recheck')
         #else:
 
-        run('./configure --with-readline --prefix '+virtuoso_root)
+        run('./configure --with-readline --enable-maintainer-mode --prefix '+virtuoso_root)
 
-        run('make -j4')
+        run("""physicalCpuCount=$([[ $(uname) = 'Darwin' ]] && 
+                       sysctl -n hw.physicalcpu_max ||
+                       nproc)
+               make -j $(($physicalCpuCount + 1))""")
         need_sudo = False
         if not exists(virtuoso_root):
             if not run('mkdir -p ' + virtuoso_root, quiet=True).succeeded:
@@ -996,6 +1083,8 @@ def virtuoso_source_install():
             sudo('checkinstall')
         else:
             run('make install')
+        #Makes sure there is no trx file with content
+        supervisor_process_stop('virtuoso')
         #If we ran this, there is a strong chance we just reconfigured the ini file
         # Make sure the virtuoso.ini and supervisor.ini reflects the changes
         execute(app_setup)
@@ -1039,7 +1128,7 @@ def commonenv(projectpath, venvpath=None):
     #Note to maintainers:  If you upgrade ruby, make sure you check that the
     # ruby_build version below supports it...
     env.ruby_version = "2.0.0-p481"
-    env.ruby_build_min_version = 20130628
+    env.ruby_build_min_version = LooseVersion('20130628')
 
 
 # Specific environments
@@ -1136,7 +1225,7 @@ def env_inm_agora():
     env.user = "www-data"
     env.home = "www-data"
     require('projectname', provided_by=('commonenv',))
-    env.hosts = ['coeus.ca']
+    env.hosts = ['discussions.bluenove.com']
 
     env.uses_apache = False
     env.uses_ngnix = True
@@ -1153,29 +1242,6 @@ def env_bluenove_discussions():
     env.ini_file = 'local.ini'
     commonenv(normpath("/var/www/assembl_discussions_bluenove_com/"))
     env.is_production_env = True
-    env.wsginame = "prod.wsgi"
-    env.urlhost = "discussions.bluenove.com"
-    env.user = "www-data"
-    env.home = "www-data"
-    require('projectname', provided_by=('commonenv',))
-    env.hosts = ['discussions.bluenove.com']
-
-    env.uses_apache = False
-    env.uses_ngnix = True
-    env.uses_uwsgi = True
-    env.gitbranch = "master"
-
-
-@task
-def env_inm_agora_ovh():
-    """
-    [ENVIRONMENT] Production on http://agora.inm.qc.ca/
-    hosted on bluenove OVH server
-    INM (Institut du nouveau monde) dedicated environment
-    """
-    env.ini_file = 'local.ini'
-    commonenv(normpath("/var/www/assembl_inm/"))
-    env.is_production_env = False
     env.wsginame = "prod.wsgi"
     env.urlhost = "discussions.bluenove.com"
     env.user = "www-data"

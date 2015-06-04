@@ -1,7 +1,7 @@
 'use strict';
 
-define(['backbone.marionette', 'common/context', 'models/panelSpec', 'views/assemblPanel', 'views/groups/panelWrapper', 'utils/panelSpecTypes'],
-    function (Marionette, ctx, panelSpec, AssemblPanel, PanelWrapper, PanelSpecTypes) {
+define(['backbone.marionette', 'common/context', 'utils/i18n', 'models/panelSpec', 'views/assemblPanel', 'views/groups/panelWrapper', 'utils/panelSpecTypes', 'views/helperDebate'],
+    function (Marionette, ctx, i18n, panelSpec, AssemblPanel, PanelWrapper, PanelSpecTypes, helperDebate) {
 
         /** Represents the entire content of a single group */
         var groupContent = Marionette.CompositeView.extend({
@@ -40,21 +40,20 @@ define(['backbone.marionette', 'common/context', 'models/panelSpec', 'views/asse
              * Set the given Idea as the current one to be edited
              * @param  {Idea} [idea]
              */
-            setCurrentIdea: function (idea) {
-              //console.log("setCurrentIdea() fired", idea);
+            setCurrentIdea: function (idea, reason, doScroll) {
+              //console.log("setCurrentIdea() fired", idea, reason, doScroll);
               if (idea === undefined) {
                 throw new Error("Setting the idea undefined isn't allowed.  Perhaps you meant null?");
               }
               if (idea != this.getCurrentIdea()) {
                 // console.log("About to set current idea on group:", this.cid);
                 this._currentIdea = idea;
-                this.trigger("idea:set", idea);
+                this.trigger("idea:set", idea, reason, doScroll);
               }
-
             },
 
             /**
-             * @return: undefined if not idea was set yet.  
+             * @return: undefined if no idea was set yet.  
              * null if it was explicitely set to no idea.
              * 
              */
@@ -66,6 +65,7 @@ define(['backbone.marionette', 'common/context', 'models/panelSpec', 'views/asse
                 this.model.collection.remove(this.model);
                 this.groupContainer.resizeAllPanels();
             },
+            
             calculateGridSize: function () {
                 var gridSize = 0;
                 this.children.each(function (panelWrapper) {
@@ -190,14 +190,29 @@ define(['backbone.marionette', 'common/context', 'models/panelSpec', 'views/asse
                 return this.model.findNavigationSidebarPanelSpec();
             },
 
-            resetDebateState: function (skip_animation) {
+            resetDebateState: function (skip_animation, show_debate_help) {
                 // Ensure that the simple view is in debate state, and coherent.
                 if (this.findNavigationSidebarPanelSpec()) {
                     this.groupContainer.suspendResize();
                     this.model.set('navigationState', 'debate');
-                    this.removePanels(PanelSpecTypes.DISCUSSION_CONTEXT, PanelSpecTypes.EXTERNAL_VISUALIZATION_CONTEXT);
-                    this.ensurePanelsVisible(PanelSpecTypes.IDEA_PANEL, PanelSpecTypes.MESSAGE_LIST);
-                    this.resetMessagePanelState();
+                    
+                    if ( show_debate_help ){
+
+                        this.removePanels(PanelSpecTypes.DISCUSSION_CONTEXT, PanelSpecTypes.EXTERNAL_VISUALIZATION_CONTEXT);
+                        this.resetMessagePanelState();
+
+                        var helper = new helperDebate();
+
+                        var conversationPanel = this.findViewByType(PanelSpecTypes.MESSAGE_LIST);
+                        conversationPanel.showAlternativeContent(helper.render().el);
+                    }
+                    else {
+                        this.removePanels(PanelSpecTypes.DISCUSSION_CONTEXT, PanelSpecTypes.EXTERNAL_VISUALIZATION_CONTEXT);
+                        this.resetMessagePanelState();
+
+                        var conversationPanel = this.findViewByType(PanelSpecTypes.MESSAGE_LIST);
+                        conversationPanel.hideAlternativeContent();
+                    }
 
                     if (skip_animation === false) {
                         this.groupContainer.resumeResize(false);
@@ -213,7 +228,7 @@ define(['backbone.marionette', 'common/context', 'models/panelSpec', 'views/asse
                 var nav = this.findNavigationSidebarPanelSpec();
                 if (nav) {
                     this.groupContainer.suspendResize();
-                    this.model.set('navigationState', 'home');
+                    this.model.set('navigationState', 'about');
                     this.ensureOnlyPanelsVisible(PanelSpecTypes.DISCUSSION_CONTEXT);
                     this.groupContainer.resumeResize();
                 }
@@ -227,6 +242,9 @@ define(['backbone.marionette', 'common/context', 'models/panelSpec', 'views/asse
                     this.ensurePanelsHidden(PanelSpecTypes.IDEA_PANEL);
                     this.resetMessagePanelWidth();
                     this.groupContainer.resumeResize(true);
+
+                    var conversationPanel = this.findViewByType(PanelSpecTypes.MESSAGE_LIST);
+                    conversationPanel.hideAlternativeContent();
                 }
             },
 
