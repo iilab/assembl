@@ -48,6 +48,8 @@ ADD     assembl/static/widget/session/bower.json /code/assembl/static/widget/ses
 ADD     assembl/static/widget/video/bower.json /code/assembl/static/widget/video/bower.json
 ADD     assembl/static/widget/vote/bower.json /code/assembl/static/widget/vote/bower.json
 ADD     assembl/static/widget/creativity/bower.json /code/assembl/static/widget/creativity/bower.json
+ADD     assembl/static/widget/share/bower.json /code/assembl/static/widget/share/bower.json
+ADD	package.json /code/package.json
 WORKDIR /code
 # TODO: this is a workaround for rbenv failing with:
 # run: bundle install --path=vendor/bundle
@@ -64,9 +66,10 @@ RUN     /etc/init.d/ssh start && \
 # Build assets
 ADD     config.rb /code/config.rb
 ADD     assembl/static/ /code/assembl/static/
+ADD	assembl/gulpfile.js /code/assembl/gulpfile.js
 RUN     /etc/init.d/ssh start && \
             fab devenv compile_stylesheets && \
-            fab devenv minify_javascript_maybe && \
+            fab devenv compile_javascript && \
             /etc/init.d/ssh stop
 
 
