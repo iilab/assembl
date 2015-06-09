@@ -596,7 +596,7 @@ def bower_update():
 def npm_update():
     """ Normally not called manually """
     with cd(env.projectpath):
-        run('npm update')
+        run('npm install')
 
 @task
 def install_builddeps():
